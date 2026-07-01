@@ -352,19 +352,15 @@ export const verifyClientRegistrationOtp = async (req, res) => {
     createdAt: user.createdAt,
   })
 
-  if (user.status === "active") {
-    const token = generateToken(user._id)
-    return res.status(201).json({
-      success: true,
-      message: "Client account registered successfully.",
-      token,
-      user: safeUser(user),
-    })
-  }
+  const token = generateToken(user._id)
+  const isApprovedClient = ["active", "verified"].includes(user.status)
 
   return res.status(201).json({
     success: true,
-    message: "Registration submitted successfully. Please wait for admin approval.",
+    message: isApprovedClient
+      ? "Client account registered successfully."
+      : "Registration submitted successfully. You are now logged in and can track your account approval status.",
+    token,
     user: safeUser(user),
   })
 }

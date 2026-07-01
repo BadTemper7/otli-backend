@@ -18,7 +18,7 @@ export const otpEmailTemplate = ({ title, otp, message }) => {
 }
 
 
-export const bookingStatusEmailTemplate = ({ title, reference, status, billingStatus, message, details = [] }) => {
+export const bookingStatusEmailTemplate = ({ title, reference, status, billingStatus, message, details = [], qrCodeValue = "", trackingUrl = "" }) => {
   const safeDetails = Array.isArray(details) ? details : []
 
   return `
@@ -38,7 +38,9 @@ export const bookingStatusEmailTemplate = ({ title, reference, status, billingSt
             ${safeDetails.map((item) => `<tr><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#64748b;font-weight:700;">${item.label}</td><td style="padding:10px;border-bottom:1px solid #e5e7eb;color:#0f172a;font-weight:800;">${item.value || "-"}</td></tr>`).join("")}
           </tbody>
         </table>
-        <p style="margin:18px 0 0;color:#94a3b8;font-size:13px;">This is an automated notification. Please login to the OTLI portal to view full details.</p>
+        ${qrCodeValue ? `<div style="margin-top:18px;border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#f8fafc;"><div style="font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#64748b;">Booking QR Value</div><div style="margin-top:8px;font-size:15px;font-weight:800;color:#0f172a;word-break:break-all;">${qrCodeValue}</div></div>` : ""}
+        ${trackingUrl ? `<p style="margin:18px 0 0;"><a href="${trackingUrl}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:800;border-radius:12px;padding:12px 18px;">Track Booking Status</a></p>` : ""}
+        <p style="margin:18px 0 0;color:#94a3b8;font-size:13px;">This is an automated notification. Use the booking number on the tracking page or login to the OTLI portal to view full details.</p>
       </div>
     </div>
   `

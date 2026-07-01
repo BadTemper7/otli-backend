@@ -115,6 +115,74 @@ const safeBlock = (block) => {
   }
 }
 
+const createDefaultBlockForArea = async (area) => {
+  const existingBlock = await YardBlock.findOne({ area: area._id })
+  if (existingBlock) return existingBlock
+
+  const lineValue = toPositiveNumber(area.lineCount, 1)
+  const rowValue = toPositiveNumber(area.rowCount, 1)
+  const tierValue = toPositiveNumber(area.tierCount, 1)
+  const size = toContainerSize(area.containerSize, 20)
+  const computedCapacity = calculateCapacityTeu({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue, containerSize: size })
+
+  const block = await YardBlock.create({
+    area: area._id,
+    name: area.name,
+    code: area.code,
+    blockType: "standard",
+    bayCount: lineValue,
+    rowCount: rowValue,
+    tierCount: tierValue,
+    containerSize: size,
+    teuSlots: area.capacityTeu ? toPositiveNumber(area.capacityTeu, computedCapacity) : computedCapacity,
+    occupiedSlots: 0,
+    status: area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive",
+    notes: "Internal location record created from the yard area for approval and slot tracking.",
+  })
+
+  await block.populate("area", "name code")
+
+  const payload = safeBlock(block)
+  emitToAdmins("inventory:block_created", payload)
+  emitToAdmins("yard:block_created", payload)
+
+  return block
+}
+
+const syncDefaultBlockWithArea = async (area) => {
+  const block = await YardBlock.findOne({
+    area: area._id,
+    notes: /(Default block created automatically from the yard area|Internal location record created from the yard area)/i,
+  })
+
+  if (!block) return null
+
+  const lineValue = toPositiveNumber(area.lineCount, 1)
+  const rowValue = toPositiveNumber(area.rowCount, 1)
+  const tierValue = toPositiveNumber(area.tierCount, 1)
+  const size = toContainerSize(area.containerSize, 20)
+  const computedCapacity = calculateCapacityTeu({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue, containerSize: size })
+
+  block.name = area.name
+  block.code = area.code
+  block.bayCount = lineValue
+  block.rowCount = rowValue
+  block.tierCount = tierValue
+  block.containerSize = size
+  block.teuSlots = area.capacityTeu ? toPositiveNumber(area.capacityTeu, computedCapacity) : computedCapacity
+  block.status = area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive"
+
+  await block.save()
+  await block.populate("area", "name code")
+
+  const payload = safeBlock(block)
+  emitToAdmins("inventory:block_updated", payload)
+  emitToAdmins("yard:block_updated", payload)
+
+  return block
+}
+
+
 const loadAreaStats = async () => {
   const stats = await YardBlock.aggregate([
     {
@@ -183,6 +251,34 @@ export const listYardAreas = async (req, res) => {
   })
 }
 
+export const listApprovalYardBlocks = async (req, res) => {
+  const areas = await YardArea.find().sort({ sortOrder: 1, name: 1 })
+  const areaLocations = []
+
+  for (const area of areas) {
+    await syncDefaultBlockWithArea(area)
+
+    let areaLocation = await YardBlock.findOne({ area: area._id })
+      .populate("area", "name code")
+      .sort({ sortOrder: 1, code: 1, name: 1 })
+
+    if (!areaLocation) {
+      areaLocation = await createDefaultBlockForArea(area)
+      await areaLocation.populate("area", "name code")
+    }
+
+    areaLocations.push(areaLocation)
+  }
+
+  const statsByArea = await loadAreaStats()
+
+  return res.json({
+    success: true,
+    areas: areas.map((area) => safeArea(area, statsByArea[String(area._id)])),
+    blocks: areaLocations.map(safeBlock),
+  })
+}
+
 export const createYardArea = async (req, res) => {
   const { name, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color, sortOrder, code } = req.body
 
@@ -216,6 +312,8 @@ export const createYardArea = async (req, res) => {
     color: color || "#0f766e",
     sortOrder: toNumber(sortOrder, 0),
   })
+
+  await createDefaultBlockForArea(area)
 
   const payload = safeArea(area)
   emitToAdmins("yard:area_created", payload)
@@ -263,6 +361,7 @@ export const updateYardArea = async (req, res) => {
   area.sortOrder = sortOrder === undefined ? area.sortOrder : toNumber(sortOrder, area.sortOrder)
 
   await area.save()
+  await syncDefaultBlockWithArea(area)
 
   const payload = safeArea(area)
   emitToAdmins("yard:area_updated", payload)
@@ -304,7 +403,12 @@ export const listYardBlocks = async (req, res) => {
     return res.status(404).json({ success: false, message: "Yard area not found." })
   }
 
-  const blocks = await YardBlock.find({ area: area._id }).populate("area", "name code").sort({ sortOrder: 1, code: 1, name: 1 })
+  let blocks = await YardBlock.find({ area: area._id }).populate("area", "name code").sort({ sortOrder: 1, code: 1, name: 1 })
+
+  if (blocks.length === 0) {
+    const defaultBlock = await createDefaultBlockForArea(area)
+    blocks = [defaultBlock]
+  }
 
   return res.json({
     success: true,

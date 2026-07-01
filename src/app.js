@@ -8,6 +8,7 @@ import authRoutes from "./routes/authRoutes.js"
 import adminRoutes from "./routes/adminRoutes.js"
 import clientRoutes from "./routes/clientRoutes.js"
 import { errorHandler, notFound } from "./middleware/errorHandler.js"
+import { getPublicBookingByNumber } from "./controllers/bookingController.js"
 
 export const getAllowedOrigins = () => {
   return (process.env.CLIENT_ORIGINS || "")
@@ -48,6 +49,9 @@ const authLimiter = rateLimit({
 app.use("/api/auth", authLimiter, authRoutes)
 app.use("/api/admin", adminRoutes)
 app.use("/api/client", clientRoutes)
+
+app.get("/api/bookings/status/:bookingNumber", getPublicBookingByNumber)
+app.get("/api/public/bookings/:bookingNumber", getPublicBookingByNumber)
 
 app.get("/api/health", (req, res) => {
   res.json({ success: true, message: "OTLI API is running." })

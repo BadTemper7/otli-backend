@@ -42,6 +42,7 @@ const bookingSchema = new mongoose.Schema(
     containerLoadStatus: { type: String, enum: ["empty", "laden"], default: "empty" },
     shippingLine: { type: String, required: true, trim: true },
     bookingNumber: { type: String, default: "", trim: true },
+    qrCodeValue: { type: String, default: "", trim: true },
     blNumber: { type: String, default: "", trim: true },
     vesselVoyage: { type: String, default: "", trim: true },
     cargoDescription: { type: String, default: "", trim: true },

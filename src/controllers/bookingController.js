@@ -1,4 +1,5 @@
 import Booking from "../models/Booking.js"
+import PreAdvice from "../models/PreAdvice.js"
 import InventoryContainer from "../models/InventoryContainer.js"
 import YardArea from "../models/YardArea.js"
 import YardBlock from "../models/YardBlock.js"
@@ -6,6 +7,7 @@ import { uploadBufferToCloudinary } from "../config/cloudinary.js"
 import { sendEmail } from "../config/mailer.js"
 import { bookingStatusEmailTemplate } from "../utils/emailTemplates.js"
 import { emitToAdmins, emitToUser } from "../socket/socket.js"
+import { buildBookingNumber } from "../utils/bookingNumber.js"
 
 const ACTIVE_BOOKING_STATUSES = [
   "approved_area_assigned",
@@ -30,6 +32,37 @@ const getTeuFactor = (size) => {
   return 1
 }
 
+const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1, containerSize = 20 }) => {
+  const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1) * getTeuFactor(containerSize)
+  return Math.max(Math.round(capacity * 100) / 100, 1)
+}
+
+const ensureAreaLocationBlock = async (area) => {
+  const existingBlock = await YardBlock.findOne({ area: area._id }).sort({ sortOrder: 1, code: 1, name: 1 })
+  if (existingBlock) return existingBlock
+
+  const lineCount = toPositive(area.lineCount, 1)
+  const rowCount = toPositive(area.rowCount, 1)
+  const tierCount = toPositive(area.tierCount, 1)
+  const containerSize = [20, 40, 45].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20
+  const capacityTeu = area.capacityTeu || calculateAreaCapacityTeu({ lineCount, rowCount, tierCount, containerSize })
+
+  return YardBlock.create({
+    area: area._id,
+    name: area.name,
+    code: area.code,
+    blockType: "standard",
+    bayCount: lineCount,
+    rowCount,
+    tierCount,
+    containerSize,
+    teuSlots: Math.max(Number(capacityTeu) || 1, 1),
+    occupiedSlots: 0,
+    status: area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive",
+    notes: "Internal location record created from the yard area for bay, row, and tier tracking.",
+  })
+}
+
 const bookingDocumentLabels = {
   paymentProof: "Payment Proof",
   otherDocument: "Other Document",
@@ -51,6 +84,17 @@ const buildSequenceNumber = async (prefix, Model, fieldName) => {
 }
 
 const getClientDisplayName = (client = {}) => client.companyName || client.name || "Client"
+
+const getClientPortalUrl = () => {
+  if (process.env.CLIENT_PUBLIC_URL) return process.env.CLIENT_PUBLIC_URL.replace(/\/$/, "")
+  const firstOrigin = String(process.env.CLIENT_ORIGINS || "").split(",").map((origin) => origin.trim()).filter(Boolean)[0]
+  return (firstOrigin || "http://localhost:5173").replace(/\/$/, "")
+}
+
+const getBookingTrackingUrl = (bookingNumber = "") => {
+  const encoded = encodeURIComponent(String(bookingNumber || "").trim())
+  return `${getClientPortalUrl()}/booking-status${encoded ? `?bookingNumber=${encoded}` : ""}`
+}
 
 const addHistory = (booking, { status = booking.status, billingStatus = booking.billingStatus, remarks = "", changedBy = null }) => {
   booking.statusHistory.push({ status, billingStatus, remarks, changedBy, changedAt: new Date() })
@@ -82,6 +126,7 @@ const safeBooking = (booking) => {
     containerLoadStatus: doc.containerLoadStatus,
     shippingLine: doc.shippingLine,
     bookingNumber: doc.bookingNumber || "",
+    qrCodeValue: doc.qrCodeValue || "",
     blNumber: doc.blNumber || "",
     vesselVoyage: doc.vesselVoyage || "",
     cargoDescription: doc.cargoDescription || "",
@@ -131,7 +176,7 @@ const safeBooking = (booking) => {
   }
 }
 
-const notifyEmail = async ({ to, subject, title, booking, message, details = [] }) => {
+const notifyEmail = async ({ to, subject, title, booking, message, details = [], qrCodeValue = "", trackingUrl = "" }) => {
   if (!to) return
 
   try {
@@ -145,6 +190,8 @@ const notifyEmail = async ({ to, subject, title, booking, message, details = [] 
         billingStatus: booking.billingStatus,
         message,
         details,
+        qrCodeValue,
+        trackingUrl,
       }),
       text: `${title}\n${message}\nBooking: ${booking.bookingReference}\nStatus: ${booking.status}\nBilling: ${booking.billingStatus}`,
     })
@@ -153,7 +200,7 @@ const notifyEmail = async ({ to, subject, title, booking, message, details = [] 
   }
 }
 
-const notifyClient = async (booking, title, message, details = []) => {
+const notifyClient = async (booking, title, message, details = [], options = {}) => {
   const populated = booking.client?.email ? booking : await booking.populate("client", "name email companyName")
   await notifyEmail({
     to: populated.client?.email,
@@ -162,6 +209,8 @@ const notifyClient = async (booking, title, message, details = []) => {
     booking: populated,
     message,
     details,
+    qrCodeValue: options.qrCodeValue || populated.qrCodeValue || "",
+    trackingUrl: options.trackingUrl || "",
   })
 }
 
@@ -229,13 +278,13 @@ const recalculateBlockOccupancy = async (blockId) => {
 }
 
 const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, containerSize, bookingId }) => {
-  if (!areaId || !blockId) {
-    const error = new Error("Select yard area and block before approving the booking.")
+  if (!areaId) {
+    const error = new Error("Select yard area before approving the booking.")
     error.statusCode = 400
     throw error
   }
 
-  const [area, block] = await Promise.all([YardArea.findById(areaId), YardBlock.findById(blockId)])
+  const area = await YardArea.findById(areaId)
 
   if (!area) {
     const error = new Error("Selected yard area was not found.")
@@ -243,30 +292,35 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
     throw error
   }
 
+  if (area.status !== "active") {
+    const error = new Error("Only active yard areas can be selected.")
+    error.statusCode = 400
+    throw error
+  }
+
+  const block = blockId ? await YardBlock.findById(blockId) : await ensureAreaLocationBlock(area)
+
   if (!block || String(block.area) !== String(area._id)) {
-    const error = new Error("Selected block does not belong to the selected area.")
+    const error = new Error("Selected yard area location was not found.")
     error.statusCode = 404
     throw error
   }
 
   if (block.status !== "active") {
-    const error = new Error("Only active yard blocks can be selected.")
+    const error = new Error("Only active yard areas can be selected.")
     error.statusCode = 400
     throw error
   }
 
-  if (Number(block.containerSize) !== Number(containerSize)) {
-    const error = new Error(`This block is configured for ${block.containerSize}ft containers. Select a matching block for ${containerSize}ft.`)
-    error.statusCode = 400
-    throw error
-  }
+  // Yard Area is the user-facing location assignment. The backend uses one internal
+  // location record per area so bay, row, and tier availability can still be tracked.
 
   const nextBay = toPositive(bay, 1)
   const nextRow = toPositive(row, 1)
   const nextTier = toPositive(tier, 1)
 
   if (nextBay > block.bayCount || nextRow > block.rowCount || nextTier > block.tierCount) {
-    const error = new Error(`Location is outside block limits. Max bay ${block.bayCount}, row ${block.rowCount}, tier ${block.tierCount}.`)
+    const error = new Error(`Location is outside yard area limits. Max bay ${block.bayCount}, row ${block.rowCount}, tier ${block.tierCount}.`)
     error.statusCode = 400
     throw error
   }
@@ -308,12 +362,6 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
   const usedTeu = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getTeuFactor(item.containerSize), 0)
   const containerTeu = getTeuFactor(containerSize)
 
-  if (usedTeu + containerTeu > Number(block.teuSlots)) {
-    const error = new Error("Selected block does not have enough remaining TEU capacity.")
-    error.statusCode = 400
-    throw error
-  }
-
   return {
     area,
     block,
@@ -335,9 +383,10 @@ export const getYardBlockSlots = async (req, res) => {
     return res.status(404).json({ success: false, message: "Yard block not found." })
   }
 
-  const [inventorySlots, bookingSlots] = await Promise.all([
+  const [inventorySlots, bookingSlots, preAdviceSlots] = await Promise.all([
     InventoryContainer.find({ block: block._id, status: { $ne: "released" } }).select("containerNumber bay row tier status"),
     Booking.find({ assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("bookingReference containerNumber assignedBay assignedRow assignedTier status"),
+    PreAdvice.find({ plannedBlock: block._id, status: "confirmed" }).select("preAdviceNumber containerNumber plannedBay plannedRow plannedTier status"),
   ])
 
   const slots = [
@@ -360,6 +409,16 @@ export const getYardBlockSlots = async (req, res) => {
       status: item.status,
       containerNumber: item.containerNumber,
       reference: item.bookingReference,
+    })),
+    ...preAdviceSlots.map((item) => ({
+      key: getSlotKey(item.plannedBay, item.plannedRow, item.plannedTier),
+      bay: Number(item.plannedBay) || 1,
+      row: Number(item.plannedRow) || 1,
+      tier: Number(item.plannedTier) || 1,
+      type: "reserved",
+      status: item.status,
+      containerNumber: item.containerNumber,
+      reference: item.preAdviceNumber,
     })),
   ]
 
@@ -395,7 +454,9 @@ export const createClientBooking = async (req, res) => {
     containerType,
     containerLoadStatus,
     shippingLine,
-    bookingNumber,
+    truckPlateNumber,
+    driverName,
+    driverLicenseNumber,
     blNumber,
     vesselVoyage,
     cargoDescription,
@@ -404,7 +465,7 @@ export const createClientBooking = async (req, res) => {
     clientRemarks,
   } = req.body
 
-  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate]
+  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate, truckPlateNumber, driverName]
   if (requiredFields.some((value) => !String(value || "").trim())) {
     return res.status(400).json({ success: false, message: "Please complete all required booking fields." })
   }
@@ -442,7 +503,9 @@ export const createClientBooking = async (req, res) => {
     containerType,
     containerLoadStatus: containerLoadStatus || "empty",
     shippingLine,
-    bookingNumber: bookingNumber || "",
+    truckPlateNumber: truckPlateNumber || "",
+    driverName: driverName || "",
+    driverLicenseNumber: driverLicenseNumber || "",
     blNumber: blNumber || "",
     vesselVoyage: vesselVoyage || "",
     cargoDescription: cargoDescription || "",
@@ -495,7 +558,9 @@ export const resubmitClientBooking = async (req, res) => {
     containerType,
     containerLoadStatus,
     shippingLine,
-    bookingNumber,
+    truckPlateNumber,
+    driverName,
+    driverLicenseNumber,
     blNumber,
     vesselVoyage,
     cargoDescription,
@@ -504,7 +569,7 @@ export const resubmitClientBooking = async (req, res) => {
     clientRemarks,
   } = req.body
 
-  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate]
+  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate, truckPlateNumber, driverName]
   if (requiredFields.some((value) => !String(value || "").trim())) {
     return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." })
   }
@@ -531,7 +596,9 @@ export const resubmitClientBooking = async (req, res) => {
   booking.containerType = containerType
   booking.containerLoadStatus = containerLoadStatus || "empty"
   booking.shippingLine = shippingLine
-  booking.bookingNumber = bookingNumber || ""
+  booking.truckPlateNumber = truckPlateNumber || ""
+  booking.driverName = driverName || ""
+  booking.driverLicenseNumber = driverLicenseNumber || ""
   booking.blNumber = blNumber || ""
   booking.vesselVoyage = vesselVoyage || ""
   booking.cargoDescription = cargoDescription || ""
@@ -595,6 +662,7 @@ export const listAdminBookings = async (req, res) => {
     const term = String(search).trim()
     query.$or = [
       { bookingReference: { $regex: term, $options: "i" } },
+      { bookingNumber: { $regex: term, $options: "i" } },
       { containerNumber: { $regex: term, $options: "i" } },
       { shippingLine: { $regex: term, $options: "i" } },
     ]
@@ -635,6 +703,12 @@ export const approveBooking = async (req, res) => {
 
   const previousBlockId = booking.assignedBlock ? String(booking.assignedBlock) : ""
 
+  if (!booking.bookingNumber) {
+    booking.bookingNumber = await buildBookingNumber()
+  }
+
+  booking.qrCodeValue = `OTLI:BOOKING:${booking.bookingNumber}:${booking.containerNumber}`
+
   booking.status = "approved_area_assigned"
   booking.rejectionReason = ""
   booking.approvedAt = new Date()
@@ -663,13 +737,20 @@ export const approveBooking = async (req, res) => {
   emitToAdmins("inventory:updated", payload)
   emitToUser(booking.client?._id || booking.client, "booking:approved", payload)
 
-  await notifyClient(booking, "Booking approved and area assigned", "Your booking was approved. A yard area and block have been assigned for your container.", [
+  await notifyClient(booking, "Booking approved and QR generated", "Your booking was approved. A booking number and QR value have been generated. Use the tracking page to view the latest status.", [
+    { label: "Booking Number", value: booking.bookingNumber },
+    { label: "Container", value: booking.containerNumber },
+    { label: "Driver", value: booking.driverName },
+    { label: "Truck Plate", value: booking.truckPlateNumber },
     { label: "Assigned Area", value: payload.assignedAreaName },
-    { label: "Assigned Block", value: payload.assignedBlockCode || payload.assignedBlockName },
     { label: "Slot", value: payload.assignedSlotNumber },
-  ])
+    { label: "Tracking Page", value: getBookingTrackingUrl(booking.bookingNumber) },
+  ], {
+    qrCodeValue: booking.qrCodeValue,
+    trackingUrl: getBookingTrackingUrl(booking.bookingNumber),
+  })
 
-  return res.json({ success: true, message: "Booking approved and yard location assigned.", booking: payload })
+  return res.json({ success: true, message: "Booking approved and yard area assigned.", booking: payload })
 }
 
 export const rejectBooking = async (req, res) => {
@@ -727,7 +808,7 @@ export const approveBookingGateIn = async (req, res) => {
   }
 
   if (!booking.assignedArea || !booking.assignedBlock) {
-    return res.status(400).json({ success: false, message: "Booking has no assigned yard area and block." })
+    return res.status(400).json({ success: false, message: "Booking has no assigned yard area." })
   }
 
   const actualContainerNumber = normalizeContainerNumber(req.body.actualContainerNumber || booking.containerNumber)
@@ -735,8 +816,8 @@ export const approveBookingGateIn = async (req, res) => {
     return res.status(400).json({ success: false, message: "Actual container number must match the approved booking." })
   }
 
-  if (!req.body.truckPlateNumber || !req.body.driverName) {
-    return res.status(400).json({ success: false, message: "Truck plate number and driver name are required." })
+  if (!booking.truckPlateNumber || !booking.driverName) {
+    return res.status(400).json({ success: false, message: "Truck plate number and driver name must be added in the booking before Gate-In." })
   }
 
   booking.status = "gate_in_approved"
@@ -745,9 +826,9 @@ export const approveBookingGateIn = async (req, res) => {
   booking.actualContainerNumber = actualContainerNumber
   booking.physicalCondition = req.body.physicalCondition || "Good"
   booking.sealNumber = req.body.sealNumber || ""
-  booking.truckPlateNumber = req.body.truckPlateNumber
-  booking.driverName = req.body.driverName
-  booking.driverLicenseNumber = req.body.driverLicenseNumber || ""
+  booking.truckPlateNumber = booking.truckPlateNumber || req.body.truckPlateNumber || ""
+  booking.driverName = booking.driverName || req.body.driverName || ""
+  booking.driverLicenseNumber = booking.driverLicenseNumber || req.body.driverLicenseNumber || ""
   booking.inspectionRemarks = req.body.inspectionRemarks || ""
   addHistory(booking, { remarks: "Gate-In approved after inspection.", changedBy: req.user._id })
 
@@ -796,7 +877,6 @@ export const markBookingStored = async (req, res) => {
 
   await notifyClient(booking, "Container stored in assigned area", "Your container has been successfully placed in the assigned yard area.", [
     { label: "Assigned Area", value: payload.assignedAreaName },
-    { label: "Assigned Block", value: payload.assignedBlockCode || payload.assignedBlockName },
     { label: "Slot", value: payload.assignedSlotNumber },
   ])
 
@@ -1085,11 +1165,39 @@ export const relocateBooking = async (req, res) => {
 
   await notifyClient(booking, "Container yard location updated", "Your container yard location has been updated by the admin.", [
     { label: "Assigned Area", value: payload.assignedAreaName },
-    { label: "Assigned Block", value: payload.assignedBlockCode || payload.assignedBlockName },
     { label: "Slot", value: payload.assignedSlotNumber },
   ])
 
   return res.json({ success: true, message: "Yard location updated successfully.", booking: payload })
+}
+
+
+export const getPublicBookingByNumber = async (req, res) => {
+  const rawNumber = String(req.params.bookingNumber || req.query.bookingNumber || "").trim()
+  const lookup = rawNumber.toUpperCase().replace(/[^A-Z0-9-]/g, "")
+
+  if (!lookup) {
+    return res.status(400).json({ success: false, message: "Enter a booking number." })
+  }
+
+  const booking = await populateBooking(
+    Booking.findOne({
+      $or: [
+        { bookingNumber: lookup },
+        { bookingReference: lookup },
+      ],
+    })
+  )
+
+  if (!booking) {
+    return res.status(404).json({ success: false, message: "Booking number was not found." })
+  }
+
+  return res.json({
+    success: true,
+    booking: safeBooking(booking),
+    trackingUrl: getBookingTrackingUrl(booking.bookingNumber || booking.bookingReference),
+  })
 }
 
 export const getBookingSummary = async (req, res) => {

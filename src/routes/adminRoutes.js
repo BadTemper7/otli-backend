@@ -15,6 +15,7 @@ import {
   deleteYardArea,
   deleteYardBlock,
   getYardSummary,
+  listApprovalYardBlocks,
   listYardAreas,
   listYardBlocks,
   updateYardArea,
@@ -63,6 +64,14 @@ router.patch("/clients/:id/reject", requirePermission("clientVerification", "edi
 router.get("/bookings/summary", requirePermission("bookings", "view"), getBookingSummary)
 router.get("/bookings", requirePermission("bookings", "view"), listAdminBookings)
 router.get("/bookings/yard/blocks/:blockId/slots", requirePermission("bookings", "view"), getYardBlockSlots)
+router.get("/pre-advice-bookings", requirePermission("preAdvice", "view"), listAdminBookings)
+router.get("/pre-advice-bookings/yard/areas", requirePermission("preAdvice", "view"), listYardAreas)
+router.get("/pre-advice-bookings/yard/blocks", requirePermission("preAdvice", "view"), listApprovalYardBlocks)
+router.get("/pre-advice-bookings/yard/areas/:areaId/blocks", requirePermission("preAdvice", "view"), listYardBlocks)
+router.get("/pre-advice-bookings/yard/blocks/:blockId/slots", requirePermission("preAdvice", "view"), getYardBlockSlots)
+router.patch("/pre-advice-bookings/:id/approve", requirePermission("preAdvice", "edit"), approveBooking)
+router.patch("/pre-advice-bookings/:id/reject", requirePermission("preAdvice", "edit"), rejectBooking)
+
 router.get("/bookings/:id", requirePermission("bookings", "view"), getAdminBooking)
 router.patch("/bookings/:id/approve", requirePermission("bookings", "edit"), approveBooking)
 router.patch("/bookings/:id/reject", requirePermission("bookings", "edit"), rejectBooking)
@@ -74,6 +83,10 @@ router.patch("/bookings/:id/payment/reject", requirePermission("paymentVerificat
 router.patch("/bookings/:id/gate-out/approve", requirePermission("gateOut", "edit"), approveBookingGateOut)
 router.patch("/bookings/:id/gate-out/complete", requirePermission("gateOut", "edit"), completeBookingGateOut)
 
+router.get("/pre-advices/yard/areas", requirePermission("preAdvice", "view"), listYardAreas)
+router.get("/pre-advices/yard/blocks", requirePermission("preAdvice", "view"), listApprovalYardBlocks)
+router.get("/pre-advices/yard/areas/:areaId/blocks", requirePermission("preAdvice", "view"), listYardBlocks)
+router.get("/pre-advices/yard/blocks/:blockId/slots", requirePermission("preAdvice", "view"), getYardBlockSlots)
 router.get("/pre-advices", requirePermission("preAdvice", "view"), listAdminPreAdvices)
 router.patch("/pre-advices/:id/confirm", requirePermission("preAdvice", "edit"), confirmPreAdvice)
 router.patch("/pre-advices/:id/reject", requirePermission("preAdvice", "edit"), rejectPreAdvice)

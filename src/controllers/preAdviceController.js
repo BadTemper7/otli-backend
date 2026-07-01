@@ -5,6 +5,7 @@ import YardArea from "../models/YardArea.js"
 import YardBlock from "../models/YardBlock.js"
 import { uploadBufferToCloudinary } from "../config/cloudinary.js"
 import { emitToAdmins, emitToUser } from "../socket/socket.js"
+import { buildBookingNumber } from "../utils/bookingNumber.js"
 
 const documentLabels = {
   eir: "EIR",
@@ -34,6 +35,39 @@ const getTeuFactor = (size) => {
   if (Number(size) === 40) return 2
   if (Number(size) === 45) return 2.25
   return 1
+}
+
+const toPositive = (value, fallback = 1) => Math.max(toNumber(value, fallback), 1)
+
+const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1, containerSize = 20 }) => {
+  const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1) * getTeuFactor(containerSize)
+  return Math.max(Math.round(capacity * 100) / 100, 1)
+}
+
+const ensureAreaLocationBlock = async (area) => {
+  const existingBlock = await YardBlock.findOne({ area: area._id }).sort({ sortOrder: 1, code: 1, name: 1 })
+  if (existingBlock) return existingBlock
+
+  const lineCount = toPositive(area.lineCount, 1)
+  const rowCount = toPositive(area.rowCount, 1)
+  const tierCount = toPositive(area.tierCount, 1)
+  const containerSize = [20, 40, 45].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20
+  const capacityTeu = area.capacityTeu || calculateAreaCapacityTeu({ lineCount, rowCount, tierCount, containerSize })
+
+  return YardBlock.create({
+    area: area._id,
+    name: area.name,
+    code: area.code,
+    blockType: "standard",
+    bayCount: lineCount,
+    rowCount,
+    tierCount,
+    containerSize,
+    teuSlots: Math.max(Number(capacityTeu) || 1, 1),
+    occupiedSlots: 0,
+    status: area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive",
+    notes: "Internal location record created from the yard area for bay, row, and tier tracking.",
+  })
 }
 
 const buildSequenceNumber = async (prefix, Model, fieldName) => {
@@ -150,13 +184,13 @@ const populatePreAdvice = (query) => {
 }
 
 const validateYardPlan = async ({ areaId, blockId, bay, row, tier, containerSize, preAdviceId }) => {
-  if (!areaId || !blockId) {
-    const error = new Error("Select yard area and block before confirming the pre-advice.")
+  if (!areaId) {
+    const error = new Error("Select yard area before confirming the pre-advice.")
     error.statusCode = 400
     throw error
   }
 
-  const [area, block] = await Promise.all([YardArea.findById(areaId), YardBlock.findById(blockId)])
+  const area = await YardArea.findById(areaId)
 
   if (!area) {
     const error = new Error("Selected yard area was not found.")
@@ -164,14 +198,22 @@ const validateYardPlan = async ({ areaId, blockId, bay, row, tier, containerSize
     throw error
   }
 
+  if (area.status !== "active") {
+    const error = new Error("Only active yard areas can be selected for pre-advice approval.")
+    error.statusCode = 400
+    throw error
+  }
+
+  const block = blockId ? await YardBlock.findById(blockId) : await ensureAreaLocationBlock(area)
+
   if (!block || String(block.area) !== String(area._id)) {
-    const error = new Error("Selected block does not belong to the selected area.")
+    const error = new Error("Selected yard area location was not found.")
     error.statusCode = 404
     throw error
   }
 
   if (block.status !== "active") {
-    const error = new Error("Only active yard blocks can be selected for pre-advice approval.")
+    const error = new Error("Only active yard areas can be selected for pre-advice approval.")
     error.statusCode = 400
     throw error
   }
@@ -181,7 +223,7 @@ const validateYardPlan = async ({ areaId, blockId, bay, row, tier, containerSize
   const nextTier = Math.max(toNumber(tier, 1), 1)
 
   if (nextBay > block.bayCount || nextRow > block.rowCount || nextTier > block.tierCount) {
-    const error = new Error(`Location is outside block limits. Max bay ${block.bayCount}, row ${block.rowCount}, tier ${block.tierCount}.`)
+    const error = new Error(`Location is outside yard area limits. Max bay ${block.bayCount}, row ${block.rowCount}, tier ${block.tierCount}.`)
     error.statusCode = 400
     throw error
   }
@@ -219,7 +261,7 @@ const validateYardPlan = async ({ areaId, blockId, bay, row, tier, containerSize
   const containerTeu = getTeuFactor(containerSize)
 
   if (usedTeu + containerTeu > Number(block.teuSlots)) {
-    const error = new Error("Selected block does not have enough available TEU capacity.")
+    const error = new Error("Selected yard area does not have enough available TEU capacity.")
     error.statusCode = 400
     throw error
   }
@@ -251,7 +293,6 @@ export const createClientPreAdvice = async (req, res) => {
     containerType,
     containerStatus,
     shippingLine,
-    bookingNumber,
     blNumber,
     vesselVoyage,
     cargoDescription,
@@ -310,7 +351,6 @@ export const createClientPreAdvice = async (req, res) => {
     containerType,
     containerStatus,
     shippingLine,
-    bookingNumber: bookingNumber || "",
     blNumber: blNumber || "",
     vesselVoyage: vesselVoyage || "",
     cargoDescription: cargoDescription || "",
@@ -369,6 +409,10 @@ export const confirmPreAdvice = async (req, res) => {
     })
   } catch (error) {
     return handleValidationError(error, res)
+  }
+
+  if (!preAdvice.bookingNumber) {
+    preAdvice.bookingNumber = await buildBookingNumber()
   }
 
   preAdvice.status = "confirmed"
