@@ -9,6 +9,7 @@ import adminRoutes from "./routes/adminRoutes.js"
 import clientRoutes from "./routes/clientRoutes.js"
 import { errorHandler, notFound } from "./middleware/errorHandler.js"
 import { getPublicBookingByNumber } from "./controllers/bookingController.js"
+import asyncHandler from "./utils/asyncHandler.js"
 
 export const getAllowedOrigins = () => {
   return (process.env.CLIENT_ORIGINS || "")
@@ -18,6 +19,11 @@ export const getAllowedOrigins = () => {
 }
 
 const app = express()
+
+// Render and other reverse proxies send X-Forwarded-* headers.
+// This keeps express-rate-limit from rejecting proxied production requests.
+app.set("trust proxy", 1)
+
 const allowedOrigins = getAllowedOrigins()
 
 app.use(
@@ -50,8 +56,8 @@ app.use("/api/auth", authLimiter, authRoutes)
 app.use("/api/admin", adminRoutes)
 app.use("/api/client", clientRoutes)
 
-app.get("/api/bookings/status/:bookingNumber", getPublicBookingByNumber)
-app.get("/api/public/bookings/:bookingNumber", getPublicBookingByNumber)
+app.get("/api/bookings/status/:bookingNumber", asyncHandler(getPublicBookingByNumber))
+app.get("/api/public/bookings/:bookingNumber", asyncHandler(getPublicBookingByNumber))
 
 app.get("/api/health", (req, res) => {
   res.json({ success: true, message: "OTLI API is running." })
