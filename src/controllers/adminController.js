@@ -64,7 +64,7 @@ export const createAdminUser = async (req, res) => {
     role: selectedRole,
     status: "active",
     isEmailVerified: true,
-    permissions: selectedRole === "super_admin" ? getAllAccessPermissions() : normalizePermissions(permissions),
+    permissions: ["super_admin", "admin"].includes(selectedRole) ? getAllAccessPermissions() : normalizePermissions(permissions),
   })
 
   emitToAdmins("admin:user_created", safeUser(admin))
@@ -107,7 +107,7 @@ export const updateUser = async (req, res) => {
     user.role = role ?? user.role
 
     if (user.userType === "admin") {
-      user.permissions = user.role === "super_admin" ? getAllAccessPermissions() : normalizePermissions(permissions || user.permissions)
+      user.permissions = ["super_admin", "admin"].includes(user.role) ? getAllAccessPermissions() : normalizePermissions(permissions || user.permissions)
     }
   }
 

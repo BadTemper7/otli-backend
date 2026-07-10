@@ -16,6 +16,24 @@ const documentSchema = new mongoose.Schema(
   { _id: false }
 )
 
+
+const billingLineItemSchema = new mongoose.Schema(
+  {
+    rate: { type: mongoose.Schema.Types.ObjectId, ref: "BillingRate", default: null },
+    chargeCode: { type: String, default: "", trim: true },
+    description: { type: String, default: "", trim: true },
+    unit: { type: String, default: "per_container", trim: true },
+    quantity: { type: Number, default: 1 },
+    rateAmount: { type: Number, default: 0 },
+    freeDays: { type: Number, default: 0 },
+    minimumAmount: { type: Number, default: 0 },
+    category: { type: String, default: "", trim: true },
+    billingScope: { type: String, default: "", trim: true },
+    amount: { type: Number, default: 0 },
+  },
+  { _id: false }
+)
+
 const statusHistorySchema = new mongoose.Schema(
   {
     status: { type: String, required: true },
@@ -40,6 +58,12 @@ const bookingSchema = new mongoose.Schema(
       required: true,
     },
     containerLoadStatus: { type: String, enum: ["empty", "laden"], default: "empty" },
+    serviceType: {
+      type: String,
+      enum: ["container_yard", "stripping_stuffing_mano"],
+      default: "container_yard",
+      index: true,
+    },
     shippingLine: { type: String, required: true, trim: true },
     bookingNumber: { type: String, default: "", trim: true },
     qrCodeValue: { type: String, default: "", trim: true },
@@ -48,6 +72,8 @@ const bookingSchema = new mongoose.Schema(
     cargoDescription: { type: String, default: "", trim: true },
     weight: { type: Number, default: 0 },
     expectedArrivalDate: { type: Date, required: true },
+    inDate: { type: Date, default: null, index: true },
+    outDate: { type: Date, default: null, index: true },
     clientRemarks: { type: String, default: "", trim: true },
 
     status: {
@@ -102,6 +128,12 @@ const bookingSchema = new mongoose.Schema(
     storedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     storageStartDate: { type: Date, default: null },
 
+    billingLineItems: { type: [billingLineItemSchema], default: [] },
+    billingSubtotal: { type: Number, default: 0 },
+    billingTotal: { type: Number, default: 0 },
+    billingDays: { type: Number, default: 0 },
+    billingComputedAt: { type: Date, default: null },
+
     paymentAmount: { type: Number, default: 0 },
     paymentReferenceNumber: { type: String, default: "", trim: true },
     paymentDate: { type: Date, default: null },
@@ -141,6 +173,9 @@ bookingSchema.pre("validate", function () {
   this.assignedBay = Math.max(Number(this.assignedBay) || 1, 1)
   this.assignedRow = Math.max(Number(this.assignedRow) || 1, 1)
   this.assignedTier = Math.max(Number(this.assignedTier) || 1, 1)
+  this.billingSubtotal = Math.max(Number(this.billingSubtotal) || 0, 0)
+  this.billingTotal = Math.max(Number(this.billingTotal) || 0, 0)
+  this.billingDays = Math.max(Number(this.billingDays) || 0, 0)
   this.paymentAmount = Math.max(Number(this.paymentAmount) || 0, 0)
   this.weight = Math.max(Number(this.weight) || 0, 0)
 })

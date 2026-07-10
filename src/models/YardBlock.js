@@ -98,7 +98,7 @@ const yardBlockSchema = new mongoose.Schema(
 
 const getContainerTeuFactor = (size) => {
   if (Number(size) === 40) return 2
-  if (Number(size) === 45) return 2.25
+  if (Number(size) === 45) return 3
   return 1
 }
 

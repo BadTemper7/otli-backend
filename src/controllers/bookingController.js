@@ -3,6 +3,7 @@ import PreAdvice from "../models/PreAdvice.js"
 import InventoryContainer from "../models/InventoryContainer.js"
 import YardArea from "../models/YardArea.js"
 import YardBlock from "../models/YardBlock.js"
+import BillingRate from "../models/BillingRate.js"
 import { uploadBufferToCloudinary } from "../config/cloudinary.js"
 import { sendEmail } from "../config/mailer.js"
 import { bookingStatusEmailTemplate } from "../utils/emailTemplates.js"
@@ -28,7 +29,7 @@ const toNumber = (value, fallback = 0) => {
 const toPositive = (value, fallback = 1) => Math.max(toNumber(value, fallback), 1)
 const getTeuFactor = (size) => {
   if (Number(size) === 40) return 2
-  if (Number(size) === 45) return 2.25
+  if (Number(size) === 45) return 3
   return 1
 }
 
@@ -83,6 +84,216 @@ const buildSequenceNumber = async (prefix, Model, fieldName) => {
   return `${value}-${Date.now().toString().slice(-4)}`
 }
 
+const buildPaymentReferenceNumber = async () => {
+  const today = new Date()
+  const yyyy = today.getFullYear()
+  const mm = String(today.getMonth() + 1).padStart(2, "0")
+  const dd = String(today.getDate()).padStart(2, "0")
+  const dateCode = `${yyyy}${mm}${dd}`
+  const dayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`)
+  const count = await Booking.countDocuments({ paymentSubmittedAt: { $gte: dayStart } })
+  const seq = String(count + 1).padStart(5, "0")
+  const baseValue = `PAY-${dateCode}-${seq}`
+
+  let value = baseValue
+  let attempt = 1
+  while (await Booking.exists({ paymentReferenceNumber: value })) {
+    attempt += 1
+    value = `${baseValue}-${Date.now().toString().slice(-4)}${attempt > 2 ? `-${attempt}` : ""}`
+  }
+
+  return value
+}
+
+const normalizeBillingRateKey = (value) => String(value || "all").trim().toLowerCase()
+const normalizeBookingServiceType = (value) => value === "stripping_stuffing_mano" ? "stripping_stuffing_mano" : "container_yard"
+
+const parseBookingDate = (value) => {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const resolveBookingDateRange = (booking = {}) => {
+  const inDate = parseBookingDate(booking.inDate || booking.expectedArrivalDate || booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt || booking.createdAt)
+  const outDate = parseBookingDate(booking.outDate)
+  return { inDate, outDate }
+}
+
+const getDateRangeDays = (startValue, endValue) => {
+  const start = parseBookingDate(startValue)
+  const end = parseBookingDate(endValue)
+  if (!start || !end) return 0
+  const diffMs = end.getTime() - start.getTime()
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 0
+  return Math.max(Math.ceil(diffMs / (24 * 60 * 60 * 1000)), 1)
+}
+
+const getStorageDays = (booking, asOf = new Date()) => {
+  const { inDate, outDate } = resolveBookingDateRange(booking)
+  const plannedDays = getDateRangeDays(inDate, outDate)
+  if (plannedDays > 0) return plannedDays
+
+  const start = booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt || booking.createdAt || asOf
+  const diffMs = new Date(asOf).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return 1
+  return Math.max(Math.ceil(diffMs / (24 * 60 * 60 * 1000)), 1)
+}
+
+const validateBookingDateRange = ({ inDate, outDate, expectedArrivalDate }) => {
+  const parsedIn = parseBookingDate(inDate || expectedArrivalDate)
+  const hasOutDate = outDate !== undefined && outDate !== null && String(outDate).trim() !== ""
+  const parsedOut = hasOutDate ? parseBookingDate(outDate) : null
+
+  if (!parsedIn) {
+    return { valid: false, message: "Please provide a valid In Date." }
+  }
+
+  if (hasOutDate && !parsedOut) {
+    return { valid: false, message: "Please provide a valid Out Date." }
+  }
+
+  if (parsedOut && parsedOut.getTime() <= parsedIn.getTime()) {
+    return { valid: false, message: "Out Date must be later than In Date." }
+  }
+
+  return { valid: true, inDate: parsedIn, outDate: parsedOut, days: parsedOut ? getDateRangeDays(parsedIn, parsedOut) : 0 }
+}
+
+const validateGateOutDate = (booking, outDate) => {
+  const parsedIn = parseBookingDate(booking.inDate || booking.expectedArrivalDate || booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt)
+  const parsedOut = parseBookingDate(outDate)
+
+  if (!parsedOut) {
+    return { valid: false, message: "Please select a valid Date Out for the gate-out request." }
+  }
+
+  if (!parsedIn) {
+    return { valid: false, message: "Booking has no valid In Date. Please ask admin to review the booking." }
+  }
+
+  if (parsedOut.getTime() <= parsedIn.getTime()) {
+    return { valid: false, message: "Date Out must be later than the booking In Date." }
+  }
+
+  return { valid: true, inDate: parsedIn, outDate: parsedOut, days: getDateRangeDays(parsedIn, parsedOut) }
+}
+
+const rateMatchesBooking = (rate, booking) => {
+  const size = String(booking.containerSize || "")
+  const type = normalizeBillingRateKey(booking.containerType)
+  const loadStatus = normalizeBillingRateKey(booking.containerLoadStatus)
+
+  const rateSize = String(rate.containerSize || "all")
+  const rateType = normalizeBillingRateKey(rate.containerType)
+  const rateLoad = normalizeBillingRateKey(rate.loadStatus)
+
+  return (rateSize === "all" || rateSize === size)
+    && (rateType === "all" || rateType === type)
+    && (rateLoad === "all" || rateLoad === loadStatus)
+}
+
+const getLatestRateByChargeCode = (rates = []) => {
+  const map = new Map()
+  for (const rate of rates) {
+    const key = String(rate.chargeCode || rate.description || rate._id)
+    if (!map.has(key)) map.set(key, rate)
+  }
+  return Array.from(map.values())
+}
+
+const shouldApplyBillingRate = (rate, booking) => {
+  const scope = String(rate.billingScope || "base")
+  if (scope === "display_only") return false
+  if (scope === "optional_stripping_stuffing") {
+    return normalizeBookingServiceType(booking.serviceType) === "stripping_stuffing_mano"
+  }
+  return true
+}
+
+export const computeBookingBilling = async (booking, { asOf = new Date(), persist = false } = {}) => {
+  const effectiveDate = new Date(asOf)
+  const activeRates = await BillingRate.find({
+    status: "active",
+    effectiveDate: { $lte: effectiveDate },
+  }).sort({ sortOrder: 1, chargeCode: 1, effectiveDate: -1, createdAt: -1 })
+
+  const matchedRates = getLatestRateByChargeCode(activeRates.filter((rate) => rateMatchesBooking(rate, booking) && shouldApplyBillingRate(rate, booking)))
+  const storageDays = getStorageDays(booking, effectiveDate)
+
+  const lineItems = matchedRates.map((rate) => {
+    const unit = rate.unit || "per_container"
+    const freeDays = Math.max(Number(rate.freeDays) || 0, 0)
+    let quantity = 1
+
+    if (["storage_day", "per_day"].includes(unit)) {
+      quantity = Math.max(storageDays - freeDays, 0)
+    } else if (unit === "per_teu") {
+      quantity = getTeuFactor(booking.containerSize)
+    }
+
+    const rawAmount = quantity * (Number(rate.rateAmount) || 0)
+    const minimumAmount = Math.max(Number(rate.minimumAmount) || 0, 0)
+    const amount = quantity > 0 ? Math.max(rawAmount, minimumAmount) : 0
+
+    return {
+      rate: rate._id,
+      chargeCode: rate.chargeCode,
+      description: rate.description,
+      unit,
+      quantity: Math.round(quantity * 100) / 100,
+      rateAmount: Number(rate.rateAmount) || 0,
+      freeDays,
+      minimumAmount,
+      category: rate.category || "container_yard_operation",
+      billingScope: rate.billingScope || "base",
+      amount: Math.round(amount * 100) / 100,
+    }
+  })
+
+  const subtotal = Math.round(lineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100
+  const total = subtotal
+  const result = {
+    lineItems,
+    subtotal,
+    total,
+    days: storageDays,
+    computedAt: effectiveDate,
+    hasMatchedRates: matchedRates.length > 0,
+  }
+
+  if (persist) {
+    booking.billingLineItems = lineItems
+    booking.billingSubtotal = subtotal
+    booking.billingTotal = total
+    booking.billingDays = storageDays
+    booking.billingComputedAt = effectiveDate
+    booking.paymentAmount = total
+  }
+
+  return result
+}
+
+const refreshComputedBilling = async (booking) => {
+  if (!booking) return booking
+  const canRefresh = ["gate_out_requested", "gate_out_approved"].includes(booking.status)
+    && ["unpaid", "payment_rejected"].includes(booking.billingStatus)
+    && Boolean(booking.outDate)
+
+  if (!canRefresh) return booking
+
+  const result = await computeBookingBilling(booking, { persist: true })
+  if (result.hasMatchedRates) await booking.save()
+  return booking
+}
+
+const refreshComputedBillingList = async (bookings = []) => {
+  for (const booking of bookings) {
+    await refreshComputedBilling(booking)
+  }
+  return bookings
+}
+
 const getClientDisplayName = (client = {}) => client.companyName || client.name || "Client"
 
 const getClientPortalUrl = () => {
@@ -124,6 +335,7 @@ const safeBooking = (booking) => {
     containerSize: Number(doc.containerSize),
     containerType: doc.containerType,
     containerLoadStatus: doc.containerLoadStatus,
+    serviceType: doc.serviceType || "container_yard",
     shippingLine: doc.shippingLine,
     bookingNumber: doc.bookingNumber || "",
     qrCodeValue: doc.qrCodeValue || "",
@@ -132,6 +344,8 @@ const safeBooking = (booking) => {
     cargoDescription: doc.cargoDescription || "",
     weight: Number(doc.weight) || 0,
     expectedArrivalDate: doc.expectedArrivalDate,
+    inDate: doc.inDate || doc.expectedArrivalDate,
+    outDate: doc.outDate,
     clientRemarks: doc.clientRemarks || "",
     status: doc.status,
     billingStatus: doc.billingStatus,
@@ -157,7 +371,12 @@ const safeBooking = (booking) => {
     inspectionRemarks: doc.inspectionRemarks || "",
     storedAt: doc.storedAt,
     storageStartDate: doc.storageStartDate,
-    paymentAmount: Number(doc.paymentAmount) || 0,
+    billingLineItems: doc.billingLineItems || [],
+    billingSubtotal: Number(doc.billingSubtotal) || 0,
+    billingTotal: Number(doc.billingTotal) || 0,
+    billingDays: Number(doc.billingDays) || 0,
+    billingComputedAt: doc.billingComputedAt,
+    paymentAmount: Number(doc.paymentAmount || doc.billingTotal) || 0,
     paymentReferenceNumber: doc.paymentReferenceNumber || "",
     paymentDate: doc.paymentDate,
     paymentRemarks: doc.paymentRemarks || "",
@@ -453,6 +672,7 @@ export const createClientBooking = async (req, res) => {
     containerSize,
     containerType,
     containerLoadStatus,
+    serviceType,
     shippingLine,
     truckPlateNumber,
     driverName,
@@ -462,12 +682,19 @@ export const createClientBooking = async (req, res) => {
     cargoDescription,
     weight,
     expectedArrivalDate,
+    inDate,
+    outDate,
     clientRemarks,
   } = req.body
 
-  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate, truckPlateNumber, driverName]
+  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName]
   if (requiredFields.some((value) => !String(value || "").trim())) {
     return res.status(400).json({ success: false, message: "Please complete all required booking fields." })
+  }
+
+  const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate })
+  if (!dateRange.valid) {
+    return res.status(400).json({ success: false, message: dateRange.message })
   }
 
   const normalizedContainer = normalizeContainerNumber(containerNumber)
@@ -502,6 +729,7 @@ export const createClientBooking = async (req, res) => {
     containerSize: Number(containerSize),
     containerType,
     containerLoadStatus: containerLoadStatus || "empty",
+    serviceType: normalizeBookingServiceType(serviceType),
     shippingLine,
     truckPlateNumber: truckPlateNumber || "",
     driverName: driverName || "",
@@ -510,7 +738,9 @@ export const createClientBooking = async (req, res) => {
     vesselVoyage: vesselVoyage || "",
     cargoDescription: cargoDescription || "",
     weight: Number(weight) || 0,
-    expectedArrivalDate,
+    expectedArrivalDate: dateRange.inDate,
+    inDate: dateRange.inDate,
+    outDate: null,
     clientRemarks: clientRemarks || "",
     status: "pending_admin_approval",
     billingStatus: "unpaid",
@@ -535,6 +765,7 @@ export const createClientBooking = async (req, res) => {
   await notifyClient(booking, "Booking request received", "Your booking request has been received and is now waiting for admin approval.", [
     { label: "Container", value: booking.containerNumber },
     { label: "Container Size", value: `${booking.containerSize}ft` },
+    { label: "In Date", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
   ])
   await notifyAdmin(booking, "New booking request", "A client submitted a new booking request for admin review.", [
     { label: "Client", value: getClientDisplayName(booking.client) },
@@ -557,6 +788,7 @@ export const resubmitClientBooking = async (req, res) => {
     containerSize,
     containerType,
     containerLoadStatus,
+    serviceType,
     shippingLine,
     truckPlateNumber,
     driverName,
@@ -566,12 +798,19 @@ export const resubmitClientBooking = async (req, res) => {
     cargoDescription,
     weight,
     expectedArrivalDate,
+    inDate,
+    outDate,
     clientRemarks,
   } = req.body
 
-  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, expectedArrivalDate, truckPlateNumber, driverName]
+  const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName]
   if (requiredFields.some((value) => !String(value || "").trim())) {
     return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." })
+  }
+
+  const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate })
+  if (!dateRange.valid) {
+    return res.status(400).json({ success: false, message: dateRange.message })
   }
 
   const normalizedContainer = normalizeContainerNumber(containerNumber)
@@ -595,6 +834,7 @@ export const resubmitClientBooking = async (req, res) => {
   booking.containerSize = Number(containerSize)
   booking.containerType = containerType
   booking.containerLoadStatus = containerLoadStatus || "empty"
+  booking.serviceType = normalizeBookingServiceType(serviceType)
   booking.shippingLine = shippingLine
   booking.truckPlateNumber = truckPlateNumber || ""
   booking.driverName = driverName || ""
@@ -603,7 +843,9 @@ export const resubmitClientBooking = async (req, res) => {
   booking.vesselVoyage = vesselVoyage || ""
   booking.cargoDescription = cargoDescription || ""
   booking.weight = Number(weight) || 0
-  booking.expectedArrivalDate = expectedArrivalDate
+  booking.expectedArrivalDate = dateRange.inDate
+  booking.inDate = dateRange.inDate
+  booking.outDate = null
   booking.clientRemarks = clientRemarks || ""
   booking.status = "pending_admin_approval"
   booking.rejectionReason = ""
@@ -643,12 +885,14 @@ export const resubmitClientBooking = async (req, res) => {
 
 export const listClientBookings = async (req, res) => {
   const bookings = await populateBooking(Booking.find({ client: req.user._id })).sort({ createdAt: -1 })
+  await refreshComputedBillingList(bookings)
   return res.json({ success: true, bookings: bookings.map(safeBooking) })
 }
 
 export const getClientBooking = async (req, res) => {
   const booking = await populateBooking(Booking.findOne({ _id: req.params.id, client: req.user._id }))
   if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
+  await refreshComputedBilling(booking)
   return res.json({ success: true, booking: safeBooking(booking) })
 }
 
@@ -669,12 +913,14 @@ export const listAdminBookings = async (req, res) => {
   }
 
   const bookings = await populateBooking(Booking.find(query)).sort({ createdAt: -1 }).limit(300)
+  await refreshComputedBillingList(bookings)
   return res.json({ success: true, bookings: bookings.map(safeBooking) })
 }
 
 export const getAdminBooking = async (req, res) => {
   const booking = await populateBooking(Booking.findById(req.params.id))
   if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
+  await refreshComputedBilling(booking)
   return res.json({ success: true, booking: safeBooking(booking) })
 }
 
@@ -857,11 +1103,20 @@ export const markBookingStored = async (req, res) => {
     return res.status(400).json({ success: false, message: "Only gate-in approved bookings can be marked as stored." })
   }
 
+  const wasAlreadyStored = booking.status === "stored_in_assigned_area"
+  const storedAt = booking.storedAt || new Date()
+
   booking.status = "stored_in_assigned_area"
-  booking.storedAt = new Date()
-  booking.storedBy = req.user._id
-  booking.storageStartDate = booking.storageStartDate || new Date()
-  addHistory(booking, { remarks: "Container stored in assigned yard location.", changedBy: req.user._id })
+  booking.storedAt = storedAt
+  booking.storedBy = booking.storedBy || req.user._id
+  booking.storageStartDate = booking.storageStartDate || booking.inDate || storedAt
+  const billingResult = booking.outDate ? await computeBookingBilling(booking, { persist: true }) : null
+  addHistory(booking, {
+    remarks: billingResult?.hasMatchedRates
+      ? `${wasAlreadyStored ? "Stored container billing refreshed" : "Container stored in assigned yard location"}. Billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
+      : "Container stored in assigned yard location. Final billing will compute after the client submits Date Out in the gate-out request.",
+    changedBy: req.user._id,
+  })
 
   await booking.save()
   await recalculateBlockOccupancy(booking.assignedBlock)
@@ -880,19 +1135,58 @@ export const markBookingStored = async (req, res) => {
     { label: "Slot", value: payload.assignedSlotNumber },
   ])
 
-  return res.json({ success: true, message: "Container marked as stored in assigned area.", booking: payload })
+  return res.json({ success: true, message: booking.outDate ? (wasAlreadyStored ? "Stored container billing refreshed." : "Container marked as stored in assigned area and billing computed.") : "Container marked as stored. Final billing will compute after Date Out is submitted in the gate-out request.", booking: payload })
+}
+
+export const updateBookingBillingOperation = async (req, res) => {
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
+
+  if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
+    return res.status(400).json({ success: false, message: "Billing operation can no longer be changed after payment is submitted or approved." })
+  }
+
+  const serviceType = normalizeBookingServiceType(req.body.serviceType)
+  booking.serviceType = serviceType
+
+  const shouldRecompute = ["gate_out_requested", "gate_out_approved"].includes(booking.status) && Boolean(booking.outDate)
+  const billingResult = shouldRecompute ? await computeBookingBilling(booking, { persist: true }) : null
+  const serviceLabel = serviceType === "stripping_stuffing_mano" ? "Stripping / Stuffing with Mano" : "Container Yard Operation"
+
+  addHistory(booking, {
+    remarks: billingResult
+      ? `Billing operation set to ${serviceLabel}. Billing recomputed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
+      : `Billing operation set to ${serviceLabel}. Billing will compute after the container is marked stored.`,
+    changedBy: req.user._id,
+  })
+
+  await booking.save()
+  await booking.populate("client", "name email companyName phoneNumber")
+  await booking.populate("assignedArea", "name code")
+  await booking.populate("assignedBlock", "name code")
+
+  const payload = safeBooking(booking)
+  emitToAdmins("booking:billing_operation_updated", payload)
+  emitToUser(booking.client?._id || booking.client, "booking:billing_operation_updated", payload)
+
+  return res.json({ success: true, message: billingResult ? "Billing operation updated and bill recomputed." : "Billing operation updated.", booking: payload })
 }
 
 export const submitBookingPayment = async (req, res) => {
   const booking = await Booking.findOne({ _id: req.params.id, client: req.user._id })
   if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
 
-  if (!["stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status)) {
-    return res.status(400).json({ success: false, message: "Payment can only be submitted after the container is stored in the assigned area." })
+  if (!["gate_out_requested", "gate_out_approved"].includes(booking.status) || !booking.outDate) {
+    return res.status(400).json({ success: false, message: "Payment can only be submitted after the gate-out request includes Date Out and final billing is computed." })
   }
 
-  if (!req.body.paymentAmount || !req.body.paymentReferenceNumber) {
-    return res.status(400).json({ success: false, message: "Payment amount and reference number are required." })
+  const billingResult = await computeBookingBilling(booking, { persist: true })
+  if (!billingResult.hasMatchedRates) {
+    return res.status(400).json({ success: false, message: "No active billing rate matched this booking. Please ask admin to complete Rate Setup first." })
+  }
+
+  if (billingResult.total <= 0) {
+    return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." })
   }
 
   const paymentProofs = await uploadBookingPaymentDocuments({ files: req.files, bookingReference: booking.bookingReference })
@@ -900,15 +1194,19 @@ export const submitBookingPayment = async (req, res) => {
     return res.status(400).json({ success: false, message: "Please upload at least one payment proof." })
   }
 
-  booking.paymentAmount = toNumber(req.body.paymentAmount, 0)
-  booking.paymentReferenceNumber = req.body.paymentReferenceNumber
+  booking.paymentAmount = billingResult.total
+  booking.paymentReferenceNumber = String(booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim()
   booking.paymentDate = req.body.paymentDate || new Date()
   booking.paymentRemarks = req.body.paymentRemarks || ""
   booking.paymentProofs = [...booking.paymentProofs, ...paymentProofs]
   booking.paymentSubmittedAt = new Date()
   booking.paymentRejectionReason = ""
   booking.billingStatus = "payment_under_review"
-  addHistory(booking, { billingStatus: "payment_under_review", remarks: "Payment proof submitted by client.", changedBy: req.user._id })
+  addHistory(booking, {
+    billingStatus: "payment_under_review",
+    remarks: `Payment proof submitted by client. Billing was auto-computed from rate setup at PHP ${billingResult.total.toLocaleString()}.`,
+    changedBy: req.user._id,
+  })
 
   await booking.save()
   await booking.populate("client", "name email companyName phoneNumber")
@@ -954,7 +1252,7 @@ export const approveBookingPayment = async (req, res) => {
   emitToAdmins("booking:payment_approved", payload)
   emitToUser(booking.client?._id || booking.client, "booking:payment_approved", payload)
 
-  await notifyClient(booking, "Payment approved", "Your payment has been approved. You can now request gate-out from the booking details page.", [
+  await notifyClient(booking, "Payment approved", "Your payment has been approved. Admin can now approve the gate-out release.", [
     { label: "Payment Reference", value: booking.paymentReferenceNumber },
   ])
 
@@ -996,14 +1294,32 @@ export const requestBookingGateOut = async (req, res) => {
     return res.status(400).json({ success: false, message: "Gate-out can only be requested after the container is stored in the assigned area." })
   }
 
-  if (booking.billingStatus !== "paid_approved") {
-    return res.status(403).json({ success: false, message: "Gate-out request is allowed only when billing status is Paid / Approved." })
+  if (booking.billingStatus !== "unpaid") {
+    return res.status(403).json({ success: false, message: "Date Out must be submitted before payment is uploaded or approved." })
+  }
+
+  const gateOutDate = validateGateOutDate(booking, req.body.outDate || req.body.gateOutDate)
+  if (!gateOutDate.valid) {
+    return res.status(400).json({ success: false, message: gateOutDate.message })
+  }
+
+  booking.outDate = gateOutDate.outDate
+  const billingResult = await computeBookingBilling(booking, { asOf: gateOutDate.outDate, persist: true })
+  if (!billingResult.hasMatchedRates) {
+    return res.status(400).json({ success: false, message: "No active billing rate matched this booking. Please ask admin to complete Rate Setup first." })
+  }
+
+  if (billingResult.total <= 0) {
+    return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." })
   }
 
   booking.status = "gate_out_requested"
   booking.gateOutRequestedAt = new Date()
   booking.gateOutRequestRemarks = req.body.remarks || ""
-  addHistory(booking, { remarks: "Gate-out requested by client.", changedBy: req.user._id })
+  addHistory(booking, {
+    remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. Final billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`,
+    changedBy: req.user._id,
+  })
 
   await booking.save()
   await booking.populate("client", "name email companyName phoneNumber")
@@ -1014,15 +1330,18 @@ export const requestBookingGateOut = async (req, res) => {
   emitToAdmins("booking:gate_out_requested", payload)
   emitToUser(req.user._id, "booking:gate_out_requested", payload)
 
-  await notifyClient(booking, "Gate-out requested", "Your gate-out request has been submitted and is waiting for admin approval.", [
+  await notifyClient(booking, "Gate-out date submitted", "Your Date Out was submitted and the final bill is now ready for payment.", [
     { label: "Container", value: booking.containerNumber },
+    { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
+    { label: "Final Bill", value: `PHP ${booking.billingTotal.toLocaleString()}` },
   ])
-  await notifyAdmin(booking, "Gate-out requested", "A client has requested gate-out release for a container.", [
+  await notifyAdmin(booking, "Gate-out requested", "A client has submitted Date Out and requested gate-out release.", [
     { label: "Client", value: getClientDisplayName(booking.client) },
     { label: "Container", value: booking.containerNumber },
+    { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
   ])
 
-  return res.json({ success: true, message: "Gate-out request submitted.", booking: payload })
+  return res.json({ success: true, message: "Gate-out request submitted. Final billing is ready for payment.", booking: payload })
 }
 
 export const approveBookingGateOut = async (req, res) => {

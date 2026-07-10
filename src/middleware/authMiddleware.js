@@ -83,7 +83,9 @@ export const superAdminOnly = (req, res, next) => {
 
 export const requirePermission = (moduleName, action = "view") => {
   return (req, res, next) => {
-    if (req.user?.role === "super_admin") return next()
+    // Super Admin and Admin are operational roles.
+    // Staff accounts still use the per-module permission matrix.
+    if (["super_admin", "admin"].includes(req.user?.role)) return next()
 
     const allowed = Boolean(req.user?.permissions?.[moduleName]?.[action])
 

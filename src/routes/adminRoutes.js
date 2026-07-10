@@ -29,6 +29,13 @@ import {
   rejectPreAdvice,
 } from "../controllers/preAdviceController.js"
 import { assignInventoryContainer, listInventoryContainers } from "../controllers/inventoryController.js"
+import {
+  createBillingRate,
+  deleteBillingRate,
+  listBillingRates,
+  seedReferenceBillingRates,
+  updateBillingRate,
+} from "../controllers/billingRateController.js"
 
 import {
   approveBooking,
@@ -44,6 +51,7 @@ import {
   relocateBooking,
   rejectBooking,
   rejectBookingPayment,
+  updateBookingBillingOperation,
 } from "../controllers/bookingController.js"
 import { adminOnly, protect, requirePermission } from "../middleware/authMiddleware.js"
 import asyncHandler from "../utils/asyncHandler.js"
@@ -78,11 +86,18 @@ router.patch("/bookings/:id/approve", requirePermission("bookings", "edit"), asy
 router.patch("/bookings/:id/reject", requirePermission("bookings", "edit"), asyncHandler(rejectBooking))
 router.patch("/bookings/:id/gate-in", requirePermission("gateIn", "edit"), asyncHandler(approveBookingGateIn))
 router.patch("/bookings/:id/store", requirePermission("inventory", "edit"), asyncHandler(markBookingStored))
+router.patch("/bookings/:id/billing-operation", requirePermission("inventory", "edit"), asyncHandler(updateBookingBillingOperation))
 router.patch("/bookings/:id/relocate", requirePermission("inventory", "edit"), asyncHandler(relocateBooking))
 router.patch("/bookings/:id/payment/approve", requirePermission("paymentVerification", "edit"), asyncHandler(approveBookingPayment))
 router.patch("/bookings/:id/payment/reject", requirePermission("paymentVerification", "edit"), asyncHandler(rejectBookingPayment))
 router.patch("/bookings/:id/gate-out/approve", requirePermission("gateOut", "edit"), asyncHandler(approveBookingGateOut))
 router.patch("/bookings/:id/gate-out/complete", requirePermission("gateOut", "edit"), asyncHandler(completeBookingGateOut))
+
+router.get("/billing-rates", requirePermission("rateSetup", "view"), asyncHandler(listBillingRates))
+router.post("/billing-rates/reference-defaults", requirePermission("rateSetup", "create"), asyncHandler(seedReferenceBillingRates))
+router.post("/billing-rates", requirePermission("rateSetup", "create"), asyncHandler(createBillingRate))
+router.patch("/billing-rates/:id", requirePermission("rateSetup", "edit"), asyncHandler(updateBillingRate))
+router.delete("/billing-rates/:id", requirePermission("rateSetup", "delete"), asyncHandler(deleteBillingRate))
 
 router.get("/pre-advices/yard/areas", requirePermission("preAdvice", "view"), asyncHandler(listYardAreas))
 router.get("/pre-advices/yard/blocks", requirePermission("preAdvice", "view"), asyncHandler(listApprovalYardBlocks))

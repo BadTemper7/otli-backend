@@ -7,6 +7,7 @@ import { compareOtp, generateOtp, hashOtp } from "../utils/generateOtp.js"
 import { generateToken } from "../utils/jwt.js"
 import { otpEmailTemplate } from "../utils/emailTemplates.js"
 import { emitToAdmins } from "../socket/socket.js"
+import { getAllAccessPermissions, normalizePermissions } from "../utils/permissions.js"
 
 const documentLabels = {
   businessPermit: "Business Permit",
@@ -42,31 +43,38 @@ const getRepresentativeName = (user) => {
   return parts || user.name
 }
 
-export const safeUser = (user) => ({
-  id: user._id,
-  name: user.name,
-  email: user.email,
-  userType: user.userType,
-  role: user.role,
-  companyName: user.companyName,
-  companyAddress: user.companyAddress,
-  companyType: user.companyType,
-  companyTypeOther: user.companyTypeOther,
-  phoneNumber: user.phoneNumber,
-  representativeFirstName: user.representativeFirstName,
-  representativeMiddleName: user.representativeMiddleName,
-  representativeLastName: user.representativeLastName,
-  representativePosition: user.representativePosition,
-  documents: user.documents,
-  rejectionReason: user.rejectionReason || "",
-  rejectedAt: user.rejectedAt,
-  verifiedAt: user.verifiedAt,
-  resubmittedAt: user.resubmittedAt,
-  status: user.status,
-  isEmailVerified: user.isEmailVerified,
-  permissions: user.permissions,
-  isLockedSeed: user.isLockedSeed,
-})
+export const safeUser = (user) => {
+  const role = user.role
+  const permissions = ["super_admin", "admin"].includes(role)
+    ? getAllAccessPermissions()
+    : normalizePermissions(user.permissions)
+
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    userType: user.userType,
+    role,
+    companyName: user.companyName,
+    companyAddress: user.companyAddress,
+    companyType: user.companyType,
+    companyTypeOther: user.companyTypeOther,
+    phoneNumber: user.phoneNumber,
+    representativeFirstName: user.representativeFirstName,
+    representativeMiddleName: user.representativeMiddleName,
+    representativeLastName: user.representativeLastName,
+    representativePosition: user.representativePosition,
+    documents: user.documents,
+    rejectionReason: user.rejectionReason || "",
+    rejectedAt: user.rejectedAt,
+    verifiedAt: user.verifiedAt,
+    resubmittedAt: user.resubmittedAt,
+    status: user.status,
+    isEmailVerified: user.isEmailVerified,
+    permissions,
+    isLockedSeed: user.isLockedSeed,
+  }
+}
 
 const uploadRegistrationDocuments = async ({ files, email }) => {
   const uploadedDocs = []
@@ -448,6 +456,42 @@ export const resetPassword = async (req, res) => {
   return res.json({ success: true, message: "Password has been reset successfully." })
 }
 
+export const changePassword = async (req, res) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body
+
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    return res.status(400).json({ success: false, message: "Current password, new password, and confirm password are required." })
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ success: false, message: "New password and confirm password do not match." })
+  }
+
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ success: false, message: "New password must be at least 6 characters." })
+  }
+
+  const user = await User.findById(req.user._id).select("+password")
+  if (!user) {
+    return res.status(404).json({ success: false, message: "Account not found." })
+  }
+
+  const isCurrentPasswordValid = await user.matchPassword(currentPassword)
+  if (!isCurrentPasswordValid) {
+    return res.status(400).json({ success: false, message: "Current password is incorrect." })
+  }
+
+  const isSamePassword = await user.matchPassword(newPassword)
+  if (isSamePassword) {
+    return res.status(400).json({ success: false, message: "New password must be different from your current password." })
+  }
+
+  user.password = newPassword
+  await user.save()
+
+  return res.json({ success: true, message: "Password changed successfully." })
+}
+
 export const sendTestEmail = async (req, res) => {
   if (process.env.NODE_ENV !== "development") {
     return res.status(403).json({
@@ -470,7 +514,7 @@ export const sendTestEmail = async (req, res) => {
     html: `
       <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111;">
         <h2>OTLI SMTP Test</h2>
-        <p>If you received this email, Brevo SMTP is working.</p>
+        <p>If you received this email, Hostinger SMTP is working.</p>
         <p>Sent at: ${new Date().toISOString()}</p>
       </div>
     `,
@@ -479,7 +523,7 @@ export const sendTestEmail = async (req, res) => {
 
   return res.json({
     success: true,
-    message: "Test email was accepted by SMTP. Check Inbox, Spam, Promotions, or Brevo Transactional logs.",
+    message: "Test email was accepted by SMTP. Check Inbox, Spam, Promotions, or your Hostinger mail logs.",
     emailDebug: info,
   })
 }

@@ -1,5 +1,6 @@
 import express from "express"
 import {
+  changePassword,
   forgotPassword,
   login,
   me,
@@ -17,6 +18,7 @@ const router = express.Router()
 
 router.post("/login", asyncHandler(login))
 router.get("/me", protect, asyncHandler(me))
+router.patch("/change-password", protect, asyncHandler(changePassword))
 
 router.post("/forgot-password", asyncHandler(forgotPassword))
 router.post("/reset-password", asyncHandler(resetPassword))
