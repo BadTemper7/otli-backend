@@ -10,7 +10,7 @@ export const OTLI_REFERENCE_RATES = [
   {
     category: "container_yard_operation",
     billingScope: "base",
-    description: "Lift On Charge",
+    description: "Lift In Charge",
     chargeCode: "LIFT_ON_20",
     unit: "per_teu",
     containerSize: "all",
@@ -21,7 +21,7 @@ export const OTLI_REFERENCE_RATES = [
   {
     category: "container_yard_operation",
     billingScope: "base",
-    description: "Lift Off Charge",
+    description: "Lift Out Charge",
     chargeCode: "LIFT_OFF_20",
     unit: "per_teu",
     containerSize: "all",
@@ -38,7 +38,7 @@ export const OTLI_REFERENCE_RATES = [
     containerSize: "20",
     rateAmount: 1000,
     sortOrder: 30,
-    notes: "Display reference only. This is the total of Lift On and Lift Off, so it is not added again to billing.",
+    notes: "Display reference only. This is the total of Lift In and Lift Out, so it is not added again to billing.",
   },
   {
     category: "container_yard_operation",
@@ -108,6 +108,109 @@ export const OTLI_REFERENCE_RATES = [
   },
 ]
 
+const normalizedUnitValues = new Set(["per_container", "per_teu", "per_day", "storage_day", "fixed"])
+
+const toChargeCode = (description = "", unitLabel = "") => {
+  const code = `${description}_${unitLabel}`
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 100)
+  return code || `RATE_${Date.now()}`
+}
+
+const getDefaultUnitLabel = (unit = "per_container", containerSize = "all") => {
+  if (unit === "per_teu") return "per 20 ft container"
+  if (unit === "storage_day" || unit === "per_day") {
+    return containerSize === "all" ? "per container/day" : `per ${containerSize} ft container/day`
+  }
+  if (unit === "fixed") return "fixed charge"
+  return containerSize === "all" ? "per container" : `per ${containerSize} ft container`
+}
+
+const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", currentRate = null } = {}) => {
+  const descriptionText = String(description).trim().toLowerCase()
+  const unitText = String(unitLabel).trim().toLowerCase()
+  const combined = `${descriptionText} ${unitText}`
+
+  const sizeMatch = combined.match(/(?:^|\D)(20|40|45)(?:\D|$)/)
+  let containerSize = sizeMatch?.[1] || currentRate?.containerSize || "all"
+
+  const isLiftIn = /\blift\s*(in|on)\b/.test(descriptionText)
+  const isLiftOut = /\blift\s*(out|off)\b/.test(descriptionText)
+  const isLift = isLiftIn || isLiftOut
+  const isStorage = /\bstorage\b/.test(descriptionText) || /\/\s*day\b|\bper\s+day\b|\bdaily\b/.test(unitText)
+  const isStrippingStuffing = /\bstripping\b|\bstuffing\b|\bmano\b/.test(descriptionText)
+  const isTotalHandling = /\btotal\s+handling\b/.test(descriptionText)
+  const isFixed = /\bfixed\b|\bflat\b/.test(unitText)
+
+  let unit = normalizedUnitValues.has(requestedUnit) ? requestedUnit : currentRate?.unit || "per_container"
+  if (isLift) {
+    unit = "per_teu"
+    containerSize = "all"
+  } else if (isStorage) {
+    unit = "storage_day"
+  } else if (isFixed) {
+    unit = "fixed"
+  } else if (!normalizedUnitValues.has(requestedUnit)) {
+    unit = "per_container"
+  }
+
+  let billingScope = currentRate?.billingScope || "base"
+  if (isTotalHandling) billingScope = "display_only"
+  else if (isStrippingStuffing) billingScope = "optional_stripping_stuffing"
+  else if (isStorage) billingScope = "storage"
+  else billingScope = "base"
+
+  const category = isStrippingStuffing ? "stripping_stuffing" : (currentRate?.category || "container_yard_operation")
+
+  let sortOrder = Number(currentRate?.sortOrder) || 100
+  if (isLiftIn) sortOrder = 10
+  else if (isLiftOut) sortOrder = 20
+  else if (isTotalHandling) sortOrder = 30
+  else if (isStorage && containerSize === "20") sortOrder = 40
+  else if (isStorage && containerSize === "40") sortOrder = 50
+  else if (/\bcongestion\b/.test(descriptionText) && containerSize === "20") sortOrder = 60
+  else if (/\bcongestion\b/.test(descriptionText) && containerSize === "40") sortOrder = 70
+  else if (isStrippingStuffing && containerSize === "20") sortOrder = 80
+  else if (isStrippingStuffing && containerSize === "40") sortOrder = 90
+
+  return {
+    category,
+    billingScope,
+    unit,
+    containerSize,
+    containerType: currentRate?.containerType || "all",
+    loadStatus: currentRate?.loadStatus || "all",
+    sortOrder,
+  }
+}
+
+const buildRatePayload = (body = {}, currentRate = null) => {
+  const description = String(body.description ?? currentRate?.description ?? "").trim()
+  const requestedUnit = normalizedUnitValues.has(body.unit) ? body.unit : ""
+  const unitLabel = String(
+    body.unitLabel
+      ?? currentRate?.unitLabel
+      ?? getDefaultUnitLabel(requestedUnit || currentRate?.unit, currentRate?.containerSize)
+  ).trim()
+
+  const rules = inferRateRules({ description, unitLabel, requestedUnit, currentRate })
+
+  return normalizeRatePayload({
+    description,
+    chargeCode: currentRate?.chargeCode || body.chargeCode || toChargeCode(description, unitLabel),
+    unitLabel,
+    ...rules,
+    rateAmount: body.rateAmount ?? currentRate?.rateAmount ?? 0,
+    freeDays: 0,
+    minimumAmount: 0,
+    effectiveDate: currentRate?.effectiveDate || new Date(),
+    status: "active",
+    notes: "",
+  })
+}
+
 const safeRate = (rate) => {
   const doc = rate.toObject ? rate.toObject() : rate
   return {
@@ -117,6 +220,7 @@ const safeRate = (rate) => {
     category: doc.category || "container_yard_operation",
     billingScope: doc.billingScope || "base",
     unit: doc.unit,
+    unitLabel: doc.unitLabel || getDefaultUnitLabel(doc.unit, doc.containerSize),
     containerSize: doc.containerSize,
     containerType: doc.containerType,
     loadStatus: doc.loadStatus,
@@ -138,6 +242,7 @@ const normalizeRatePayload = (body = {}) => ({
   category: body.category || "container_yard_operation",
   billingScope: body.billingScope || "base",
   unit: body.unit || (body.billingScope === "storage" ? "storage_day" : "per_container"),
+  unitLabel: String(body.unitLabel || getDefaultUnitLabel(body.unit || (body.billingScope === "storage" ? "storage_day" : "per_container"), String(body.containerSize || "all"))).trim(),
   containerSize: String(body.containerSize || "all"),
   containerType: body.containerType || "all",
   loadStatus: body.loadStatus || "all",
@@ -161,6 +266,7 @@ export const listBillingRates = async (req, res) => {
     query.$or = [
       { description: { $regex: term, $options: "i" } },
       { chargeCode: { $regex: term, $options: "i" } },
+      { unitLabel: { $regex: term, $options: "i" } },
       { notes: { $regex: term, $options: "i" } },
     ]
   }
@@ -170,9 +276,9 @@ export const listBillingRates = async (req, res) => {
 }
 
 export const createBillingRate = async (req, res) => {
-  const payload = normalizeRatePayload(req.body)
-  if (!payload.description) {
-    return res.status(400).json({ success: false, message: "Rate description is required." })
+  const payload = buildRatePayload(req.body)
+  if (!payload.description || !payload.unitLabel) {
+    return res.status(400).json({ success: false, message: "Description and Unit are required." })
   }
   if (payload.rateAmount <= 0) {
     return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." })
@@ -188,9 +294,9 @@ export const updateBillingRate = async (req, res) => {
   const rate = await BillingRate.findById(req.params.id)
   if (!rate) return res.status(404).json({ success: false, message: "Billing rate not found." })
 
-  const payload = normalizeRatePayload({ ...rate.toObject(), ...req.body })
-  if (!payload.description) {
-    return res.status(400).json({ success: false, message: "Rate description is required." })
+  const payload = buildRatePayload(req.body, rate)
+  if (!payload.description || !payload.unitLabel) {
+    return res.status(400).json({ success: false, message: "Description and Unit are required." })
   }
   if (payload.rateAmount <= 0) {
     return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." })
@@ -251,4 +357,18 @@ export const deleteBillingRate = async (req, res) => {
   await rate.deleteOne()
   emitToAdmins("billing_rate:deleted", safe)
   return res.json({ success: true, message: "Billing rate deleted successfully." })
+}
+
+export const listActiveBillingRates = async (req, res) => {
+  const rates = await BillingRate.find({
+    status: "active",
+    effectiveDate: { $lte: new Date() },
+  }).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 })
+
+  const latestByCode = new Map()
+  for (const rate of rates) {
+    if (!latestByCode.has(rate.chargeCode)) latestByCode.set(rate.chargeCode, rate)
+  }
+
+  return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate) })
 }

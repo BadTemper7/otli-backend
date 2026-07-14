@@ -34,6 +34,31 @@ const billingLineItemSchema = new mongoose.Schema(
   { _id: false }
 )
 
+const additionalChargeSchema = new mongoose.Schema(
+  {
+    description: { type: String, required: true, trim: true },
+    quantity: { type: Number, default: 1, min: 0 },
+    rateAmount: { type: Number, default: 0, min: 0 },
+    amount: { type: Number, default: 0, min: 0 },
+    notes: { type: String, default: "", trim: true },
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    addedAt: { type: Date, default: Date.now },
+  },
+  { _id: true },
+)
+
+const paymentTypeSnapshotSchema = new mongoose.Schema(
+  {
+    type: { type: String, default: "" },
+    name: { type: String, default: "" },
+    bankName: { type: String, default: "" },
+    accountNumber: { type: String, default: "" },
+    accountName: { type: String, default: "" },
+    qrUrl: { type: String, default: "" },
+  },
+  { _id: false },
+)
+
 const statusHistorySchema = new mongoose.Schema(
   {
     status: { type: String, required: true },
@@ -75,6 +100,7 @@ const bookingSchema = new mongoose.Schema(
     inDate: { type: Date, default: null, index: true },
     outDate: { type: Date, default: null, index: true },
     clientRemarks: { type: String, default: "", trim: true },
+    documents: { type: [documentSchema], default: [] },
 
     status: {
       type: String,
@@ -129,12 +155,15 @@ const bookingSchema = new mongoose.Schema(
     storageStartDate: { type: Date, default: null },
 
     billingLineItems: { type: [billingLineItemSchema], default: [] },
+    additionalBillingCharges: { type: [additionalChargeSchema], default: [] },
     billingSubtotal: { type: Number, default: 0 },
     billingTotal: { type: Number, default: 0 },
     billingDays: { type: Number, default: 0 },
     billingComputedAt: { type: Date, default: null },
 
     paymentAmount: { type: Number, default: 0 },
+    paymentType: { type: mongoose.Schema.Types.ObjectId, ref: "PaymentType", default: null, index: true },
+    paymentTypeSnapshot: { type: paymentTypeSnapshotSchema, default: () => ({}) },
     paymentReferenceNumber: { type: String, default: "", trim: true },
     paymentDate: { type: Date, default: null },
     paymentRemarks: { type: String, default: "", trim: true },
@@ -177,6 +206,12 @@ bookingSchema.pre("validate", function () {
   this.billingTotal = Math.max(Number(this.billingTotal) || 0, 0)
   this.billingDays = Math.max(Number(this.billingDays) || 0, 0)
   this.paymentAmount = Math.max(Number(this.paymentAmount) || 0, 0)
+  this.additionalBillingCharges = (this.additionalBillingCharges || []).map((item) => {
+    item.quantity = Math.max(Number(item.quantity) || 0, 0)
+    item.rateAmount = Math.max(Number(item.rateAmount) || 0, 0)
+    item.amount = Math.round(item.quantity * item.rateAmount * 100) / 100
+    return item
+  })
   this.weight = Math.max(Number(this.weight) || 0, 0)
 })
 

@@ -9,9 +9,11 @@ import {
   submitBookingPayment,
 } from "../controllers/bookingController.js"
 import { clientOnly, protect, verifiedClientOnly } from "../middleware/authMiddleware.js"
-import { bookingPaymentUpload, preAdviceUpload } from "../middleware/uploadMiddleware.js"
+import { bookingPaymentUpload, bookingPreAdviceUpload, preAdviceUpload } from "../middleware/uploadMiddleware.js"
 import { safeUser } from "../controllers/authController.js"
 import asyncHandler from "../utils/asyncHandler.js"
+import { listActiveBillingRates } from "../controllers/billingRateController.js"
+import { listActivePaymentTypes } from "../controllers/paymentTypeController.js"
 
 const router = express.Router()
 
@@ -25,8 +27,10 @@ router.get("/account-status", (req, res) => {
   })
 })
 
+router.get("/rates", verifiedClientOnly, asyncHandler(listActiveBillingRates))
+router.get("/payment-types", verifiedClientOnly, asyncHandler(listActivePaymentTypes))
 router.get("/bookings", verifiedClientOnly, asyncHandler(listClientBookings))
-router.post("/bookings", verifiedClientOnly, asyncHandler(createClientBooking))
+router.post("/bookings", verifiedClientOnly, bookingPreAdviceUpload, asyncHandler(createClientBooking))
 router.get("/bookings/:id", verifiedClientOnly, asyncHandler(getClientBooking))
 router.patch("/bookings/:id/resubmit", verifiedClientOnly, asyncHandler(resubmitClientBooking))
 router.post("/bookings/:id/payment", verifiedClientOnly, bookingPaymentUpload, asyncHandler(submitBookingPayment))

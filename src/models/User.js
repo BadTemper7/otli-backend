@@ -80,6 +80,7 @@ const userSchema = new mongoose.Schema(
       gateIn: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
       storageMonitoring: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
       rateSetup: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
+      paymentTypes: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
       billing: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
       paymentVerification: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
       gateOut: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },

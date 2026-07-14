@@ -22,6 +22,7 @@ const billingRateSchema = new mongoose.Schema(
       default: "per_container",
       index: true,
     },
+    unitLabel: { type: String, default: "", trim: true },
     containerSize: { type: String, enum: ["all", "20", "40", "45"], default: "all", index: true },
     containerType: {
       type: String,
@@ -52,6 +53,14 @@ billingRateSchema.pre("validate", function () {
   this.containerSize = String(this.containerSize || "all")
   this.containerType = String(this.containerType || "all")
   this.loadStatus = String(this.loadStatus || "all")
+  const defaultUnitLabels = {
+    per_container: "per container",
+    per_teu: "per 20 ft equivalent",
+    per_day: "per day",
+    storage_day: "per container/day",
+    fixed: "fixed charge",
+  }
+  this.unitLabel = String(this.unitLabel || defaultUnitLabels[this.unit] || this.unit || "").trim()
   this.rateAmount = Math.max(Number(this.rateAmount) || 0, 0)
   this.freeDays = Math.max(Number(this.freeDays) || 0, 0)
   this.minimumAmount = Math.max(Number(this.minimumAmount) || 0, 0)

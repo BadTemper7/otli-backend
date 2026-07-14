@@ -45,8 +45,30 @@ export const preAdviceUpload = upload.fields([
   { name: "otherDocument", maxCount: 1 },
 ])
 
+export const bookingPreAdviceUpload = upload.fields([
+  { name: "eir", maxCount: 1 },
+  { name: "deliveryOrder", maxCount: 1 },
+  { name: "bookingConfirmation", maxCount: 1 },
+  { name: "packingList", maxCount: 1 },
+  { name: "customsClearance", maxCount: 1 },
+  { name: "otherDocument", maxCount: 1 },
+])
+
 
 export const bookingPaymentUpload = upload.fields([
   { name: "paymentProof", maxCount: 3 },
   { name: "otherDocument", maxCount: 2 },
 ])
+
+const paymentTypeImageUpload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)) {
+      return cb(new Error("QR image must be JPG, PNG, or WEBP."))
+    }
+    cb(null, true)
+  },
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+})
+
+export const paymentTypeUpload = paymentTypeImageUpload.single("qr")

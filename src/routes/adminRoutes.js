@@ -52,8 +52,17 @@ import {
   rejectBooking,
   rejectBookingPayment,
   updateBookingBillingOperation,
+  addBookingAdditionalCharge,
+  deleteBookingAdditionalCharge,
 } from "../controllers/bookingController.js"
 import { adminOnly, protect, requirePermission } from "../middleware/authMiddleware.js"
+import {
+  createPaymentType,
+  deletePaymentType,
+  listPaymentTypes,
+  updatePaymentType,
+} from "../controllers/paymentTypeController.js"
+import { paymentTypeUpload } from "../middleware/uploadMiddleware.js"
 import asyncHandler from "../utils/asyncHandler.js"
 
 const router = express.Router()
@@ -87,6 +96,8 @@ router.patch("/bookings/:id/reject", requirePermission("bookings", "edit"), asyn
 router.patch("/bookings/:id/gate-in", requirePermission("gateIn", "edit"), asyncHandler(approveBookingGateIn))
 router.patch("/bookings/:id/store", requirePermission("inventory", "edit"), asyncHandler(markBookingStored))
 router.patch("/bookings/:id/billing-operation", requirePermission("inventory", "edit"), asyncHandler(updateBookingBillingOperation))
+router.post("/bookings/:id/additional-charges", requirePermission("paymentVerification", "edit"), asyncHandler(addBookingAdditionalCharge))
+router.delete("/bookings/:id/additional-charges/:chargeId", requirePermission("paymentVerification", "edit"), asyncHandler(deleteBookingAdditionalCharge))
 router.patch("/bookings/:id/relocate", requirePermission("inventory", "edit"), asyncHandler(relocateBooking))
 router.patch("/bookings/:id/payment/approve", requirePermission("paymentVerification", "edit"), asyncHandler(approveBookingPayment))
 router.patch("/bookings/:id/payment/reject", requirePermission("paymentVerification", "edit"), asyncHandler(rejectBookingPayment))
@@ -98,6 +109,11 @@ router.post("/billing-rates/reference-defaults", requirePermission("rateSetup", 
 router.post("/billing-rates", requirePermission("rateSetup", "create"), asyncHandler(createBillingRate))
 router.patch("/billing-rates/:id", requirePermission("rateSetup", "edit"), asyncHandler(updateBillingRate))
 router.delete("/billing-rates/:id", requirePermission("rateSetup", "delete"), asyncHandler(deleteBillingRate))
+
+router.get("/payment-types", requirePermission("paymentTypes", "view"), asyncHandler(listPaymentTypes))
+router.post("/payment-types", requirePermission("paymentTypes", "create"), paymentTypeUpload, asyncHandler(createPaymentType))
+router.patch("/payment-types/:id", requirePermission("paymentTypes", "edit"), paymentTypeUpload, asyncHandler(updatePaymentType))
+router.delete("/payment-types/:id", requirePermission("paymentTypes", "delete"), asyncHandler(deletePaymentType))
 
 router.get("/pre-advices/yard/areas", requirePermission("preAdvice", "view"), asyncHandler(listYardAreas))
 router.get("/pre-advices/yard/blocks", requirePermission("preAdvice", "view"), asyncHandler(listApprovalYardBlocks))

@@ -4,6 +4,7 @@ import InventoryContainer from "../models/InventoryContainer.js"
 import YardArea from "../models/YardArea.js"
 import YardBlock from "../models/YardBlock.js"
 import BillingRate from "../models/BillingRate.js"
+import PaymentType from "../models/PaymentType.js"
 import { uploadBufferToCloudinary } from "../config/cloudinary.js"
 import { sendEmail } from "../config/mailer.js"
 import { bookingStatusEmailTemplate } from "../utils/emailTemplates.js"
@@ -64,7 +65,16 @@ const ensureAreaLocationBlock = async (area) => {
   })
 }
 
-const bookingDocumentLabels = {
+const bookingPreAdviceDocumentLabels = {
+  deliveryOrder: "Delivery Order",
+  bookingConfirmation: "Booking Confirmation",
+  eir: "EIR",
+  packingList: "Packing List",
+  customsClearance: "Customs Clearance",
+  otherDocument: "Other Document",
+}
+
+const bookingPaymentDocumentLabels = {
   paymentProof: "Payment Proof",
   otherDocument: "Other Document",
 }
@@ -239,7 +249,11 @@ export const computeBookingBilling = async (booking, { asOf = new Date(), persis
     return {
       rate: rate._id,
       chargeCode: rate.chargeCode,
-      description: rate.description,
+      description: rate.chargeCode === "LIFT_ON_20"
+        ? "Lift In Charge"
+        : rate.chargeCode === "LIFT_OFF_20"
+          ? "Lift Out Charge"
+          : rate.description,
       unit,
       quantity: Math.round(quantity * 100) / 100,
       rateAmount: Number(rate.rateAmount) || 0,
@@ -251,10 +265,25 @@ export const computeBookingBilling = async (booking, { asOf = new Date(), persis
     }
   })
 
-  const subtotal = Math.round(lineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100
+  const additionalLineItems = (booking.additionalBillingCharges || []).map((item, index) => ({
+    rate: null,
+    chargeCode: `ADDITIONAL_${index + 1}`,
+    description: item.description || "Additional Charge",
+    unit: "fixed",
+    quantity: Number(item.quantity) || 0,
+    rateAmount: Number(item.rateAmount) || 0,
+    freeDays: 0,
+    minimumAmount: 0,
+    category: "custom",
+    billingScope: "additional",
+    amount: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.rateAmount) || 0))) * 100) / 100,
+  }))
+
+  const allLineItems = [...lineItems, ...additionalLineItems]
+  const subtotal = Math.round(allLineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100
   const total = subtotal
   const result = {
-    lineItems,
+    lineItems: allLineItems,
     subtotal,
     total,
     days: storageDays,
@@ -263,7 +292,7 @@ export const computeBookingBilling = async (booking, { asOf = new Date(), persis
   }
 
   if (persist) {
-    booking.billingLineItems = lineItems
+    booking.billingLineItems = allLineItems
     booking.billingSubtotal = subtotal
     booking.billingTotal = total
     booking.billingDays = storageDays
@@ -347,6 +376,7 @@ const safeBooking = (booking) => {
     inDate: doc.inDate || doc.expectedArrivalDate,
     outDate: doc.outDate,
     clientRemarks: doc.clientRemarks || "",
+    documents: doc.documents || [],
     status: doc.status,
     billingStatus: doc.billingStatus,
     rejectionReason: doc.rejectionReason || "",
@@ -372,11 +402,22 @@ const safeBooking = (booking) => {
     storedAt: doc.storedAt,
     storageStartDate: doc.storageStartDate,
     billingLineItems: doc.billingLineItems || [],
+    additionalBillingCharges: (doc.additionalBillingCharges || []).map((item) => ({
+      id: String(item._id),
+      description: item.description,
+      quantity: Number(item.quantity) || 0,
+      rateAmount: Number(item.rateAmount) || 0,
+      amount: Number(item.amount) || 0,
+      notes: item.notes || "",
+      addedAt: item.addedAt,
+    })),
     billingSubtotal: Number(doc.billingSubtotal) || 0,
     billingTotal: Number(doc.billingTotal) || 0,
     billingDays: Number(doc.billingDays) || 0,
     billingComputedAt: doc.billingComputedAt,
     paymentAmount: Number(doc.paymentAmount || doc.billingTotal) || 0,
+    paymentType: doc.paymentType ? String(doc.paymentType?._id || doc.paymentType) : "",
+    paymentTypeSnapshot: doc.paymentTypeSnapshot || {},
     paymentReferenceNumber: doc.paymentReferenceNumber || "",
     paymentDate: doc.paymentDate,
     paymentRemarks: doc.paymentRemarks || "",
@@ -446,10 +487,39 @@ const notifyAdmin = async (booking, title, message, details = []) => {
   })
 }
 
+const uploadBookingPreAdviceDocuments = async ({ files, bookingReference }) => {
+  const uploadedDocs = []
+
+  for (const fieldName of Object.keys(bookingPreAdviceDocumentLabels)) {
+    const list = files?.[fieldName] || []
+    for (const file of list) {
+      const result = await uploadBufferToCloudinary({
+        file,
+        folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/booking-pre-advice`,
+        publicIdPrefix: `${bookingReference}-${fieldName}-${Date.now()}`,
+      })
+
+      uploadedDocs.push({
+        type: fieldName,
+        label: bookingPreAdviceDocumentLabels[fieldName],
+        fileName: file.originalname,
+        url: result.url,
+        secureUrl: result.secure_url,
+        publicId: result.public_id,
+        resourceType: result.resource_type || "auto",
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+      })
+    }
+  }
+
+  return uploadedDocs
+}
+
 const uploadBookingPaymentDocuments = async ({ files, bookingReference }) => {
   const uploadedDocs = []
 
-  for (const fieldName of Object.keys(bookingDocumentLabels)) {
+  for (const fieldName of Object.keys(bookingPaymentDocumentLabels)) {
     const list = files?.[fieldName] || []
     for (const file of list) {
       const result = await uploadBufferToCloudinary({
@@ -460,7 +530,7 @@ const uploadBookingPaymentDocuments = async ({ files, bookingReference }) => {
 
       uploadedDocs.push({
         type: fieldName,
-        label: bookingDocumentLabels[fieldName],
+        label: bookingPaymentDocumentLabels[fieldName],
         fileName: file.originalname,
         url: result.url,
         secureUrl: result.secure_url,
@@ -722,6 +792,15 @@ export const createClientBooking = async (req, res) => {
 
   const bookingReference = await buildSequenceNumber("BK", Booking, "bookingReference")
 
+  if (!req.files?.deliveryOrder?.[0] || !req.files?.bookingConfirmation?.[0]) {
+    return res.status(400).json({
+      success: false,
+      message: "Delivery Order and Booking Confirmation are required for pre-advice verification.",
+    })
+  }
+
+  const documents = await uploadBookingPreAdviceDocuments({ files: req.files, bookingReference })
+
   const booking = await Booking.create({
     client: req.user._id,
     bookingReference,
@@ -742,6 +821,7 @@ export const createClientBooking = async (req, res) => {
     inDate: dateRange.inDate,
     outDate: null,
     clientRemarks: clientRemarks || "",
+    documents,
     status: "pending_admin_approval",
     billingStatus: "unpaid",
     submittedAt: new Date(),
@@ -762,17 +842,17 @@ export const createClientBooking = async (req, res) => {
   emitToAdmins("booking:submitted", payload)
   emitToUser(req.user._id, "booking:submitted", payload)
 
-  await notifyClient(booking, "Booking request received", "Your booking request has been received and is now waiting for admin approval.", [
+  await notifyClient(booking, "Booking submitted for pre-advice review", "Your booking has been received and is now visible in the admin Pre-Advice module for verification.", [
     { label: "Container", value: booking.containerNumber },
     { label: "Container Size", value: `${booking.containerSize}ft` },
     { label: "In Date", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
   ])
-  await notifyAdmin(booking, "New booking request", "A client submitted a new booking request for admin review.", [
+  await notifyAdmin(booking, "New booking pre-advice", "A client created a booking. It is ready for verification in the Pre-Advice module.", [
     { label: "Client", value: getClientDisplayName(booking.client) },
     { label: "Container", value: booking.containerNumber },
   ])
 
-  return res.status(201).json({ success: true, message: "Booking submitted. Please wait for admin approval.", booking: payload })
+  return res.status(201).json({ success: true, message: "Booking submitted as pre-advice. Please wait for admin verification.", booking: payload })
 }
 
 export const resubmitClientBooking = async (req, res) => {
@@ -1172,6 +1252,80 @@ export const updateBookingBillingOperation = async (req, res) => {
   return res.json({ success: true, message: billingResult ? "Billing operation updated and bill recomputed." : "Billing operation updated.", booking: payload })
 }
 
+export const addBookingAdditionalCharge = async (req, res) => {
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
+
+  if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
+    return res.status(400).json({ success: false, message: "Additional charges can only be changed before payment is submitted or after a rejected payment." })
+  }
+
+  const description = String(req.body.description || "").trim()
+  const quantity = Math.max(Number(req.body.quantity) || 1, 0)
+  const rateAmount = Math.max(Number(req.body.rateAmount) || 0, 0)
+  if (!description) return res.status(400).json({ success: false, message: "Additional charge description is required." })
+  if (rateAmount <= 0) return res.status(400).json({ success: false, message: "Additional charge rate must be greater than zero." })
+
+  booking.additionalBillingCharges.push({
+    description,
+    quantity,
+    rateAmount,
+    amount: Math.round(quantity * rateAmount * 100) / 100,
+    notes: String(req.body.notes || "").trim(),
+    addedBy: req.user._id,
+    addedAt: new Date(),
+  })
+
+  const canCompute = Boolean(booking.outDate)
+  const billingResult = canCompute ? await computeBookingBilling(booking, { persist: true }) : null
+  addHistory(booking, {
+    remarks: billingResult
+      ? `Additional billing charge added: ${description}. Bill recomputed at PHP ${billingResult.total.toLocaleString()}.`
+      : `Additional billing charge added: ${description}. It will be included when final billing is computed.`,
+    changedBy: req.user._id,
+  })
+
+  await booking.save()
+  await booking.populate("client", "name email companyName phoneNumber")
+  await booking.populate("assignedArea", "name code")
+  await booking.populate("assignedBlock", "name code")
+  const payload = safeBooking(booking)
+  emitToAdmins("booking:additional_charge_added", payload)
+  emitToUser(booking.client?._id || booking.client, "booking:additional_charge_added", payload)
+  return res.status(201).json({ success: true, message: "Additional billing charge added.", booking: payload })
+}
+
+export const deleteBookingAdditionalCharge = async (req, res) => {
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
+
+  if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
+    return res.status(400).json({ success: false, message: "Additional charges can only be changed before payment is submitted or after a rejected payment." })
+  }
+
+  const charge = booking.additionalBillingCharges.id(req.params.chargeId)
+  if (!charge) return res.status(404).json({ success: false, message: "Additional charge not found." })
+  const description = charge.description
+  charge.deleteOne()
+
+  const billingResult = booking.outDate ? await computeBookingBilling(booking, { persist: true }) : null
+  addHistory(booking, {
+    remarks: billingResult
+      ? `Additional billing charge removed: ${description}. Bill recomputed at PHP ${billingResult.total.toLocaleString()}.`
+      : `Additional billing charge removed: ${description}.`,
+    changedBy: req.user._id,
+  })
+
+  await booking.save()
+  await booking.populate("client", "name email companyName phoneNumber")
+  await booking.populate("assignedArea", "name code")
+  await booking.populate("assignedBlock", "name code")
+  const payload = safeBooking(booking)
+  emitToAdmins("booking:additional_charge_deleted", payload)
+  emitToUser(booking.client?._id || booking.client, "booking:additional_charge_deleted", payload)
+  return res.json({ success: true, message: "Additional billing charge removed.", booking: payload })
+}
+
 export const submitBookingPayment = async (req, res) => {
   const booking = await Booking.findOne({ _id: req.params.id, client: req.user._id })
   if (!booking) return res.status(404).json({ success: false, message: "Booking not found." })
@@ -1189,12 +1343,26 @@ export const submitBookingPayment = async (req, res) => {
     return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." })
   }
 
+  const paymentType = await PaymentType.findOne({ _id: req.body.paymentTypeId, status: "active" })
+  if (!paymentType) {
+    return res.status(400).json({ success: false, message: "Please select an available payment type." })
+  }
+
   const paymentProofs = await uploadBookingPaymentDocuments({ files: req.files, bookingReference: booking.bookingReference })
   if (paymentProofs.length === 0) {
     return res.status(400).json({ success: false, message: "Please upload at least one payment proof." })
   }
 
   booking.paymentAmount = billingResult.total
+  booking.paymentType = paymentType._id
+  booking.paymentTypeSnapshot = {
+    type: paymentType.type,
+    name: paymentType.name,
+    bankName: paymentType.bankName || "",
+    accountNumber: paymentType.accountNumber,
+    accountName: paymentType.accountName,
+    qrUrl: paymentType.qrSecureUrl || paymentType.qrUrl || "",
+  }
   booking.paymentReferenceNumber = String(booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim()
   booking.paymentDate = req.body.paymentDate || new Date()
   booking.paymentRemarks = req.body.paymentRemarks || ""
