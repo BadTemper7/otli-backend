@@ -9,7 +9,7 @@ const GateInRecord_js_1 = __importDefault(require("../models/GateInRecord.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
 const YardArea_js_1 = __importDefault(require("../models/YardArea.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
-const cloudinary_js_1 = require("../config/cloudinary.js");
+const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
 const documentLabels = {
@@ -90,26 +90,27 @@ const recalculateBlockOccupancy = async (blockId) => {
         occupiedSlots: Math.round(occupiedSlots * 100) / 100,
     });
 };
-const uploadPreAdviceDocuments = async ({ files, containerNumber }) => {
+const uploadPreAdviceDocuments = async ({ files, containerNumber, clientId }) => {
     const uploadedDocs = [];
     const safeContainer = normalizeContainerNumber(containerNumber) || `container-${Date.now()}`;
     for (const fieldName of Object.keys(documentLabels)) {
         const file = files?.[fieldName]?.[0];
         if (!file)
             continue;
-        const result = await (0, cloudinary_js_1.uploadBufferToCloudinary)({
+        const result = await (0, localFileStorage_js_1.saveUploadedFile)({
             file,
-            folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/pre-advice`,
-            publicIdPrefix: `${safeContainer}-${fieldName}-${Date.now()}`,
+            clientId,
+            category: `pre-advice-${safeContainer}`,
+            prefix: fieldName,
         });
         uploadedDocs.push({
             type: fieldName,
             label: documentLabels[fieldName],
             fileName: file.originalname,
             url: result.url,
-            secureUrl: result.secure_url,
-            publicId: result.public_id,
-            resourceType: result.resource_type || "auto",
+            secureUrl: result.secureUrl,
+            publicId: result.publicId,
+            resourceType: result.resourceType || "local",
             mimeType: file.mimetype,
             sizeBytes: file.size,
             uploadedAt: new Date(),
@@ -284,7 +285,11 @@ const createClientPreAdvice = async (req, res) => {
     if (inInventory) {
         return res.status(409).json({ success: false, message: "This container is already in active inventory." });
     }
-    const documents = await uploadPreAdviceDocuments({ files: req.files, containerNumber: normalizedContainer });
+    const documents = await uploadPreAdviceDocuments({
+        files: req.files,
+        containerNumber: normalizedContainer,
+        clientId: req.user._id,
+    });
     const preAdviceNumber = await buildSequenceNumber("PA", PreAdvice_js_1.default, "preAdviceNumber");
     const qrCodeValue = `OTLI:${preAdviceNumber}:${normalizedContainer}`;
     const preAdvice = await PreAdvice_js_1.default.create({

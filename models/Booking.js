@@ -27,6 +27,7 @@ const billingLineItemSchema = new mongoose_1.default.Schema({
     minimumAmount: { type: Number, default: 0 },
     category: { type: String, default: "", trim: true },
     billingScope: { type: String, default: "", trim: true },
+    rateType: { type: String, enum: ["local", "international"], default: "local" },
     amount: { type: Number, default: 0 },
 }, { _id: false });
 const additionalChargeSchema = new mongoose_1.default.Schema({
@@ -64,6 +65,7 @@ const bookingSchema = new mongoose_1.default.Schema({
         required: true,
     },
     containerLoadStatus: { type: String, enum: ["empty", "laden"], default: "empty" },
+    rateType: { type: String, enum: ["local", "international"], default: "local", index: true },
     serviceType: {
         type: String,
         enum: ["container_yard", "stripping_stuffing_mano"],
@@ -164,6 +166,7 @@ bookingSchema.pre("validate", function () {
     if (this.actualContainerNumber) {
         this.actualContainerNumber = String(this.actualContainerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
     }
+    this.rateType = this.rateType === "international" ? "international" : "local";
     this.assignedBay = Math.max(Number(this.assignedBay) || 1, 1);
     this.assignedRow = Math.max(Number(this.assignedRow) || 1, 1);
     this.assignedTier = Math.max(Number(this.assignedTier) || 1, 1);

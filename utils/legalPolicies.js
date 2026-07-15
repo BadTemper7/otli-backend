@@ -1,0 +1,11 @@
+"use strict";
+
+const TERMS_VERSION = "2026-07-15";
+const PRIVACY_POLICY_VERSION = "2026-07-15";
+const LEGAL_EFFECTIVE_DATE = "July 15, 2026";
+
+module.exports = {
+  TERMS_VERSION,
+  PRIVACY_POLICY_VERSION,
+  LEGAL_EFFECTIVE_DATE,
+};

@@ -5,15 +5,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const mongoose_1 = __importDefault(require("mongoose"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 const PendingClient_js_1 = __importDefault(require("../models/PendingClient.js"));
-const cloudinary_js_1 = require("../config/cloudinary.js");
+const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
 const generateOtp_js_1 = require("../utils/generateOtp.js");
 const jwt_js_1 = require("../utils/jwt.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
 const permissions_js_1 = require("../utils/permissions.js");
+const legalPolicies_js_1 = require("../utils/legalPolicies.js");
 const documentLabels = {
     businessPermit: "Business Permit",
     birCertificate: "BIR Certificate",
@@ -22,6 +24,15 @@ const documentLabels = {
     otherDocument: "Other Document",
 };
 const requiredDocumentFields = ["businessPermit", "birCertificate", "validId"];
+const isAffirmativeConsent = (value) => ["true", "1", "yes", "on"].includes(String(value || "").trim().toLowerCase());
+const getRequestIpAddress = (req) => {
+    const forwarded = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
+    return forwarded || req.socket?.remoteAddress || req.ip || "";
+};
+const hasCompleteLegalConsent = (legalConsent) => Boolean(legalConsent?.termsAccepted &&
+    legalConsent?.privacyAccepted &&
+    legalConsent?.representativeAuthorityConfirmed &&
+    legalConsent?.acceptedAt);
 const getOtpExpiryDate = () => {
     const minutes = Number(process.env.EMAIL_OTP_EXPIRES_MINUTES || 10);
     return new Date(Date.now() + minutes * 60 * 1000);
@@ -68,31 +79,39 @@ const safeUser = (user) => {
         resubmittedAt: user.resubmittedAt,
         status: user.status,
         isEmailVerified: user.isEmailVerified,
+        legalConsent: user.legalConsent ? {
+            termsAccepted: Boolean(user.legalConsent.termsAccepted),
+            privacyAccepted: Boolean(user.legalConsent.privacyAccepted),
+            representativeAuthorityConfirmed: Boolean(user.legalConsent.representativeAuthorityConfirmed),
+            termsVersion: user.legalConsent.termsVersion || "",
+            privacyPolicyVersion: user.legalConsent.privacyPolicyVersion || "",
+            acceptedAt: user.legalConsent.acceptedAt || null,
+        } : null,
         permissions,
         isLockedSeed: user.isLockedSeed,
     };
 };
 exports.safeUser = safeUser;
-const uploadRegistrationDocuments = async ({ files, email }) => {
+const uploadRegistrationDocuments = async ({ files, clientId }) => {
     const uploadedDocs = [];
-    const safeEmail = String(email).toLowerCase().replace(/[^a-z0-9_-]/g, "-");
     for (const fieldName of Object.keys(documentLabels)) {
         const file = files?.[fieldName]?.[0];
         if (!file)
             continue;
-        const result = await (0, cloudinary_js_1.uploadBufferToCloudinary)({
+        const result = await (0, localFileStorage_js_1.saveUploadedFile)({
             file,
-            folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/client-registration`,
-            publicIdPrefix: `${safeEmail}-${fieldName}-${Date.now()}`,
+            clientId,
+            category: "registration",
+            prefix: fieldName,
         });
         uploadedDocs.push({
             type: fieldName,
             label: documentLabels[fieldName],
             fileName: file.originalname,
             url: result.url,
-            secureUrl: result.secure_url,
-            publicId: result.public_id,
-            resourceType: result.resource_type || "auto",
+            secureUrl: result.secureUrl,
+            publicId: result.publicId,
+            resourceType: result.resourceType || "local",
             mimeType: file.mimetype,
             sizeBytes: file.size,
             uploadedAt: new Date(),
@@ -138,7 +157,7 @@ const me = async (req, res) => {
 };
 exports.me = me;
 const requestClientRegistrationOtp = async (req, res) => {
-    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, } = req.body;
+    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
     const requiredFields = [
         companyName,
         companyAddress,
@@ -156,6 +175,12 @@ const requestClientRegistrationOtp = async (req, res) => {
     }
     if (password !== confirmPassword) {
         return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
+    }
+    if (!isAffirmativeConsent(termsAccepted) || !isAffirmativeConsent(privacyAccepted) || !isAffirmativeConsent(representativeAuthorityConfirmed)) {
+        return res.status(400).json({
+            success: false,
+            message: "You must accept the Terms and Conditions, consent to the Privacy Policy, and confirm your authority to register the company.",
+        });
     }
     const missingDocuments = requiredDocumentFields.filter((fieldName) => !req.files?.[fieldName]?.[0]);
     if (missingDocuments.length) {
@@ -176,11 +201,16 @@ const requestClientRegistrationOtp = async (req, res) => {
             message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
         });
     }
-    const uploadedDocs = await uploadRegistrationDocuments({ files: req.files, email: normalizedEmail });
+    const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
+    const uploadedDocs = await uploadRegistrationDocuments({
+        files: req.files,
+        clientId: reservedClientId,
+    });
     const otp = (0, generateOtp_js_1.generateOtp)();
     const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
     const passwordHash = await bcryptjs_1.default.hash(password, 10);
     await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+        clientId: reservedClientId,
         companyName,
         companyAddress,
         companyType,
@@ -193,6 +223,16 @@ const requestClientRegistrationOtp = async (req, res) => {
         email: normalizedEmail,
         password: passwordHash,
         documents: uploadedDocs,
+        legalConsent: {
+            termsAccepted: true,
+            privacyAccepted: true,
+            representativeAuthorityConfirmed: true,
+            termsVersion: legalPolicies_js_1.TERMS_VERSION,
+            privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
+            acceptedAt: new Date(),
+            ipAddress: getRequestIpAddress(req),
+            userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
+        },
         otpHash,
         otpExpiresAt: getOtpExpiryDate(),
         otpAttempts: 0,
@@ -219,6 +259,12 @@ const resendClientRegistrationOtp = async (req, res) => {
     const pending = await PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash");
     if (!pending) {
         return res.status(404).json({ success: false, message: "No pending registration found." });
+    }
+    if (!hasCompleteLegalConsent(pending.legalConsent)) {
+        return res.status(400).json({
+            success: false,
+            message: "Please restart registration and accept the current Terms and Conditions and Privacy Policy.",
+        });
     }
     if (!canResendOtp(pending.otpLastSentAt)) {
         return res.status(429).json({
@@ -254,6 +300,12 @@ const verifyClientRegistrationOtp = async (req, res) => {
     if (!pending) {
         return res.status(404).json({ success: false, message: "No pending registration found." });
     }
+    if (!hasCompleteLegalConsent(pending.legalConsent)) {
+        return res.status(400).json({
+            success: false,
+            message: "Please restart registration and accept the current Terms and Conditions and Privacy Policy.",
+        });
+    }
     if (pending.otpExpiresAt < new Date()) {
         return res.status(400).json({ success: false, message: "OTP has expired. Please request a new one." });
     }
@@ -269,6 +321,7 @@ const verifyClientRegistrationOtp = async (req, res) => {
     }
     const defaultClientStatus = process.env.CLIENT_REGISTER_DEFAULT_STATUS || "pending";
     const user = await User_js_1.default.create({
+        _id: pending.clientId || pending._id,
         name: `${pending.representativeFirstName} ${pending.representativeLastName}`.trim(),
         email: pending.email,
         password: pending.password,
@@ -284,6 +337,7 @@ const verifyClientRegistrationOtp = async (req, res) => {
         representativeLastName: pending.representativeLastName,
         representativePosition: pending.representativePosition,
         documents: pending.documents,
+        legalConsent: pending.legalConsent,
         status: defaultClientStatus,
         isEmailVerified: true,
     });

@@ -2,6 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const path = require("path");
+const { ensureDocumentsRoot, DOCUMENTS_ROOT } = require("./utils/localFileStorage.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +12,25 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Local document storage. Client folders are created automatically on upload.
+ensureDocumentsRoot().catch((error) => {
+  console.error("❌ Unable to initialize documents directory:", error.message);
+});
+app.use(
+  "/documents",
+  express.static(DOCUMENTS_ROOT, {
+    dotfiles: "deny",
+    index: false,
+    fallthrough: true,
+    maxAge: 0,
+    setHeaders: (res) => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    },
+  }),
+);
 
 // MongoDB Connection
 const MONGODB_URI =

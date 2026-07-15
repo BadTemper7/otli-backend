@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deletePaymentType = exports.updatePaymentType = exports.createPaymentType = exports.listActivePaymentTypes = exports.listPaymentTypes = exports.safePaymentType = void 0;
 const PaymentType_js_1 = __importDefault(require("../models/PaymentType.js"));
-const cloudinary_js_1 = require("../config/cloudinary.js");
+const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const socket_js_1 = require("../socket/socket.js");
 const toNumber = (value, fallback = 100) => {
     const parsed = Number(value);
@@ -56,15 +56,16 @@ const validatePayload = (payload) => {
 const uploadQr = async (file, paymentName) => {
     if (!file)
         return null;
-    const result = await (0, cloudinary_js_1.uploadBufferToCloudinary)({
+    const result = await (0, localFileStorage_js_1.saveUploadedFile)({
         file,
-        folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/payment-types`,
-        publicIdPrefix: `payment-${String(paymentName || "qr").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`,
+        clientId: "system",
+        category: "payment-type",
+        prefix: paymentName || "qr",
     });
     return {
         qrUrl: result.url || "",
-        qrSecureUrl: result.secure_url || result.url || "",
-        qrPublicId: result.public_id || "",
+        qrSecureUrl: result.secureUrl || result.url || "",
+        qrPublicId: result.publicId || "",
     };
 };
 const listPaymentTypes = async (req, res) => {
@@ -117,7 +118,7 @@ const updatePaymentType = async (req, res) => {
     Object.assign(paymentType, payload, qr || {});
     await paymentType.save();
     if (qr && previousPublicId && previousPublicId !== paymentType.qrPublicId) {
-        await (0, cloudinary_js_1.deleteFromCloudinary)(previousPublicId).catch(() => null);
+        await (0, localFileStorage_js_1.deleteLocalFile)(previousPublicId).catch(() => null);
     }
     const safe = (0, exports.safePaymentType)(paymentType);
     (0, socket_js_1.emitToAdmins)("payment_type:updated", safe);
@@ -130,7 +131,7 @@ const deletePaymentType = async (req, res) => {
         return res.status(404).json({ success: false, message: "Payment type not found." });
     const safe = (0, exports.safePaymentType)(paymentType);
     if (paymentType.qrPublicId)
-        await (0, cloudinary_js_1.deleteFromCloudinary)(paymentType.qrPublicId).catch(() => null);
+        await (0, localFileStorage_js_1.deleteLocalFile)(paymentType.qrPublicId).catch(() => null);
     await paymentType.deleteOne();
     (0, socket_js_1.emitToAdmins)("payment_type:deleted", safe);
     return res.json({ success: true, message: "Payment type deleted successfully." });

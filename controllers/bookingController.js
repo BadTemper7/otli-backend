@@ -11,7 +11,7 @@ const YardArea_js_1 = __importDefault(require("../models/YardArea.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const BillingRate_js_1 = __importDefault(require("../models/BillingRate.js"));
 const PaymentType_js_1 = __importDefault(require("../models/PaymentType.js"));
-const cloudinary_js_1 = require("../config/cloudinary.js");
+const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
@@ -113,6 +113,7 @@ const buildPaymentReferenceNumber = async () => {
 };
 const normalizeBillingRateKey = (value) => String(value || "all").trim().toLowerCase();
 const normalizeBookingServiceType = (value) => value === "stripping_stuffing_mano" ? "stripping_stuffing_mano" : "container_yard";
+const normalizeRateType = (value) => value === "international" ? "international" : "local";
 const parseBookingDate = (value) => {
     if (!value)
         return null;
@@ -179,16 +180,19 @@ const rateMatchesBooking = (rate, booking) => {
     const type = normalizeBillingRateKey(booking.containerType);
     const loadStatus = normalizeBillingRateKey(booking.containerLoadStatus);
     const rateSize = String(rate.containerSize || "all");
-    const rateType = normalizeBillingRateKey(rate.containerType);
+    const rateContainerType = normalizeBillingRateKey(rate.containerType);
     const rateLoad = normalizeBillingRateKey(rate.loadStatus);
-    return (rateSize === "all" || rateSize === size)
-        && (rateType === "all" || rateType === type)
+    const bookingRateType = normalizeRateType(booking.rateType);
+    const billingRateType = normalizeRateType(rate.rateType);
+    return billingRateType === bookingRateType
+        && (rateSize === "all" || rateSize === size)
+        && (rateContainerType === "all" || rateContainerType === type)
         && (rateLoad === "all" || rateLoad === loadStatus);
 };
 const getLatestRateByChargeCode = (rates = []) => {
     const map = new Map();
     for (const rate of rates) {
-        const key = String(rate.chargeCode || rate.description || rate._id);
+        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
         if (!map.has(key))
             map.set(key, rate);
     }
@@ -239,6 +243,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
             minimumAmount,
             category: rate.category || "container_yard_operation",
             billingScope: rate.billingScope || "base",
+            rateType: normalizeRateType(rate.rateType),
             amount: Math.round(amount * 100) / 100,
         };
     });
@@ -253,6 +258,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         minimumAmount: 0,
         category: "custom",
         billingScope: "additional",
+        rateType: normalizeRateType(booking.rateType),
         amount: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.rateAmount) || 0))) * 100) / 100,
     }));
     const allLineItems = [...lineItems, ...additionalLineItems];
@@ -333,6 +339,7 @@ const safeBooking = (booking) => {
         containerType: doc.containerType,
         containerLoadStatus: doc.containerLoadStatus,
         serviceType: doc.serviceType || "container_yard",
+        rateType: normalizeRateType(doc.rateType),
         shippingLine: doc.shippingLine,
         bookingNumber: doc.bookingNumber || "",
         qrCodeValue: doc.qrCodeValue || "",
@@ -453,24 +460,25 @@ const notifyAdmin = async (booking, title, message, details = []) => {
         details,
     });
 };
-const uploadBookingPreAdviceDocuments = async ({ files, bookingReference }) => {
+const uploadBookingPreAdviceDocuments = async ({ files, bookingReference, clientId }) => {
     const uploadedDocs = [];
     for (const fieldName of Object.keys(bookingPreAdviceDocumentLabels)) {
         const list = files?.[fieldName] || [];
         for (const file of list) {
-            const result = await (0, cloudinary_js_1.uploadBufferToCloudinary)({
+            const result = await (0, localFileStorage_js_1.saveUploadedFile)({
                 file,
-                folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/booking-pre-advice`,
-                publicIdPrefix: `${bookingReference}-${fieldName}-${Date.now()}`,
+                clientId,
+                category: `booking-${bookingReference}`,
+                prefix: fieldName,
             });
             uploadedDocs.push({
                 type: fieldName,
                 label: bookingPreAdviceDocumentLabels[fieldName],
                 fileName: file.originalname,
                 url: result.url,
-                secureUrl: result.secure_url,
-                publicId: result.public_id,
-                resourceType: result.resource_type || "auto",
+                secureUrl: result.secureUrl,
+                publicId: result.publicId,
+                resourceType: result.resourceType || "local",
                 mimeType: file.mimetype,
                 sizeBytes: file.size,
             });
@@ -478,24 +486,25 @@ const uploadBookingPreAdviceDocuments = async ({ files, bookingReference }) => {
     }
     return uploadedDocs;
 };
-const uploadBookingPaymentDocuments = async ({ files, bookingReference }) => {
+const uploadBookingPaymentDocuments = async ({ files, bookingReference, clientId }) => {
     const uploadedDocs = [];
     for (const fieldName of Object.keys(bookingPaymentDocumentLabels)) {
         const list = files?.[fieldName] || [];
         for (const file of list) {
-            const result = await (0, cloudinary_js_1.uploadBufferToCloudinary)({
+            const result = await (0, localFileStorage_js_1.saveUploadedFile)({
                 file,
-                folder: `${process.env.CLOUDINARY_FOLDER || "otli-documents"}/booking-payments`,
-                publicIdPrefix: `${bookingReference}-${fieldName}-${Date.now()}`,
+                clientId,
+                category: `payment-${bookingReference}`,
+                prefix: fieldName,
             });
             uploadedDocs.push({
                 type: fieldName,
                 label: bookingPaymentDocumentLabels[fieldName],
                 fileName: file.originalname,
                 url: result.url,
-                secureUrl: result.secure_url,
-                publicId: result.public_id,
-                resourceType: result.resource_type || "auto",
+                secureUrl: result.secureUrl,
+                publicId: result.publicId,
+                resourceType: result.resourceType || "local",
                 mimeType: file.mimetype,
                 sizeBytes: file.size,
                 uploadedAt: new Date(),
@@ -668,7 +677,7 @@ const handleValidationError = (error, res) => {
     throw error;
 };
 const createClientBooking = async (req, res) => {
-    const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
+    const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
     const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields." });
@@ -702,7 +711,11 @@ const createClientBooking = async (req, res) => {
             message: "Delivery Order and Booking Confirmation are required for pre-advice verification.",
         });
     }
-    const documents = await uploadBookingPreAdviceDocuments({ files: req.files, bookingReference });
+    const documents = await uploadBookingPreAdviceDocuments({
+        files: req.files,
+        bookingReference,
+        clientId: req.user._id,
+    });
     const booking = await Booking_js_1.default.create({
         client: req.user._id,
         bookingReference,
@@ -711,6 +724,7 @@ const createClientBooking = async (req, res) => {
         containerType,
         containerLoadStatus: containerLoadStatus || "empty",
         serviceType: normalizeBookingServiceType(serviceType),
+        rateType: normalizeRateType(rateType),
         shippingLine,
         truckPlateNumber: truckPlateNumber || "",
         driverName: driverName || "",
@@ -744,6 +758,7 @@ const createClientBooking = async (req, res) => {
     await notifyClient(booking, "Booking submitted for pre-advice review", "Your booking has been received and is now visible in the admin Pre-Advice module for verification.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Container Size", value: `${booking.containerSize}ft` },
+        { label: "Rate Type", value: normalizeRateType(booking.rateType) === "international" ? "International" : "Local" },
         { label: "In Date", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
     ]);
     await notifyAdmin(booking, "New booking pre-advice", "A client created a booking. It is ready for verification in the Pre-Advice module.", [
@@ -760,7 +775,7 @@ const resubmitClientBooking = async (req, res) => {
     if (booking.status !== "rejected") {
         return res.status(400).json({ success: false, message: "Only rejected bookings can be resubmitted." });
     }
-    const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
+    const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
     const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." });
@@ -787,6 +802,7 @@ const resubmitClientBooking = async (req, res) => {
     booking.containerType = containerType;
     booking.containerLoadStatus = containerLoadStatus || "empty";
     booking.serviceType = normalizeBookingServiceType(serviceType);
+    booking.rateType = normalizeRateType(rateType ?? booking.rateType);
     booking.shippingLine = shippingLine;
     booking.truckPlateNumber = truckPlateNumber || "";
     booking.driverName = driverName || "";
@@ -1068,14 +1084,17 @@ const updateBookingBillingOperation = async (req, res) => {
         return res.status(400).json({ success: false, message: "Billing operation can no longer be changed after payment is submitted or approved." });
     }
     const serviceType = normalizeBookingServiceType(req.body.serviceType);
+    const rateType = normalizeRateType(req.body.rateType ?? booking.rateType);
     booking.serviceType = serviceType;
+    booking.rateType = rateType;
     const shouldRecompute = ["gate_out_requested", "gate_out_approved"].includes(booking.status) && Boolean(booking.outDate);
     const billingResult = shouldRecompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
     const serviceLabel = serviceType === "stripping_stuffing_mano" ? "Stripping / Stuffing with Mano" : "Container Yard Operation";
+    const rateTypeLabel = rateType === "international" ? "International" : "Local";
     addHistory(booking, {
         remarks: billingResult
-            ? `Billing operation set to ${serviceLabel}. Billing recomputed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
-            : `Billing operation set to ${serviceLabel}. Billing will compute after the container is marked stored.`,
+            ? `Billing operation set to ${serviceLabel} using ${rateTypeLabel} rates. Billing recomputed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
+            : `Billing operation set to ${serviceLabel} using ${rateTypeLabel} rates. Billing will compute after the container is marked stored.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1176,7 +1195,11 @@ const submitBookingPayment = async (req, res) => {
     if (!paymentType) {
         return res.status(400).json({ success: false, message: "Please select an available payment type." });
     }
-    const paymentProofs = await uploadBookingPaymentDocuments({ files: req.files, bookingReference: booking.bookingReference });
+    const paymentProofs = await uploadBookingPaymentDocuments({
+        files: req.files,
+        bookingReference: booking.bookingReference,
+        clientId: req.user._id,
+    });
     if (paymentProofs.length === 0) {
         return res.status(400).json({ success: false, message: "Please upload at least one payment proof." });
     }

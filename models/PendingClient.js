@@ -16,7 +16,18 @@ const pendingDocumentSchema = new mongoose_1.default.Schema({
     sizeBytes: { type: Number, default: 0 },
     uploadedAt: { type: Date, default: Date.now },
 }, { _id: false });
+const legalConsentSchema = new mongoose_1.default.Schema({
+    termsAccepted: { type: Boolean, default: false },
+    privacyAccepted: { type: Boolean, default: false },
+    representativeAuthorityConfirmed: { type: Boolean, default: false },
+    termsVersion: { type: String, default: "" },
+    privacyPolicyVersion: { type: String, default: "" },
+    acceptedAt: { type: Date, default: null },
+    ipAddress: { type: String, default: "" },
+    userAgent: { type: String, default: "" },
+}, { _id: false });
 const pendingClientSchema = new mongoose_1.default.Schema({
+    clientId: { type: mongoose_1.default.Schema.Types.ObjectId, required: true, unique: true, sparse: true, index: true },
     companyName: { type: String, required: true, trim: true },
     companyAddress: { type: String, required: true, trim: true },
     companyType: { type: String, required: true, trim: true },
@@ -29,6 +40,7 @@ const pendingClientSchema = new mongoose_1.default.Schema({
     email: { type: String, required: true, lowercase: true, trim: true, index: true },
     password: { type: String, required: true },
     documents: { type: [pendingDocumentSchema], default: [] },
+    legalConsent: { type: legalConsentSchema, default: () => ({}) },
     otpHash: { type: String, required: true, select: false },
     otpExpiresAt: { type: Date, required: true },
     otpAttempts: { type: Number, default: 0 },

@@ -12,6 +12,7 @@ const toNumber = (value, fallback = 0) => {
 };
 exports.OTLI_REFERENCE_RATES = [
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "base",
         description: "Lift In Charge",
@@ -23,6 +24,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Reference: PHP 500 per 20 ft equivalent. A 40ft container is charged x2.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "base",
         description: "Lift Out Charge",
@@ -34,6 +36,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Reference: PHP 500 per 20 ft equivalent. A 40ft container is charged x2.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "display_only",
         description: "Total Handling per Container Cycle",
@@ -45,6 +48,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Display reference only. This is the total of Lift In and Lift Out, so it is not added again to billing.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "storage",
         description: "Storage",
@@ -56,6 +60,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Reference: per 20 ft container per day.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "storage",
         description: "Storage",
@@ -67,6 +72,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Reference: per 40 ft container per day.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "display_only",
         description: "Congestion Surcharge",
@@ -78,6 +84,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Display reference only by default. Change billing scope to Base Auto Charge if congestion should be billed automatically.",
     },
     {
+        rateType: "local",
         category: "container_yard_operation",
         billingScope: "display_only",
         description: "Congestion Surcharge",
@@ -89,6 +96,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Display reference only by default. Change billing scope to Base Auto Charge if congestion should be billed automatically.",
     },
     {
+        rateType: "local",
         category: "stripping_stuffing",
         billingScope: "optional_stripping_stuffing",
         description: "Stripping / Stuffing (with Mano)",
@@ -100,6 +108,7 @@ exports.OTLI_REFERENCE_RATES = [
         notes: "Added only when the booking service is Stripping / Stuffing with Mano.",
     },
     {
+        rateType: "local",
         category: "stripping_stuffing",
         billingScope: "optional_stripping_stuffing",
         description: "Stripping / Stuffing (with Mano)",
@@ -206,6 +215,7 @@ const buildRatePayload = (body = {}, currentRate = null) => {
     return normalizeRatePayload({
         description,
         chargeCode: currentRate?.chargeCode || body.chargeCode || toChargeCode(description, unitLabel),
+        rateType: body.rateType ?? currentRate?.rateType ?? "local",
         unitLabel,
         ...rules,
         rateAmount: body.rateAmount ?? currentRate?.rateAmount ?? 0,
@@ -222,6 +232,7 @@ const safeRate = (rate) => {
         id: String(doc._id),
         description: doc.description,
         chargeCode: doc.chargeCode,
+        rateType: doc.rateType === "international" ? "international" : "local",
         category: doc.category || "container_yard_operation",
         billingScope: doc.billingScope || "base",
         unit: doc.unit,
@@ -243,6 +254,7 @@ const safeRate = (rate) => {
 const normalizeRatePayload = (body = {}) => ({
     description: String(body.description || "").trim(),
     chargeCode: String(body.chargeCode || body.description || "").trim(),
+    rateType: body.rateType === "international" ? "international" : "local",
     category: body.category || "container_yard_operation",
     billingScope: body.billingScope || "base",
     unit: body.unit || (body.billingScope === "storage" ? "storage_day" : "per_container"),
@@ -259,12 +271,18 @@ const normalizeRatePayload = (body = {}) => ({
     sortOrder: toNumber(body.sortOrder, 100),
 });
 const listBillingRates = async (req, res) => {
-    const { status, search, category } = req.query;
+    const { status, search, category, rateType } = req.query;
     const query = {};
     if (status && status !== "all")
         query.status = status;
     if (category && category !== "all")
         query.category = category;
+    if (rateType && rateType !== "all") {
+        query.$and = query.$and || [];
+        query.$and.push(rateType === "local"
+            ? { $or: [{ rateType: "local" }, { rateType: { $exists: false } }] }
+            : { rateType: "international" });
+    }
     if (search) {
         const term = String(search).trim();
         query.$or = [
@@ -274,7 +292,7 @@ const listBillingRates = async (req, res) => {
             { notes: { $regex: term, $options: "i" } },
         ];
     }
-    const rates = await BillingRate_js_1.default.find(query).sort({ category: 1, sortOrder: 1, status: 1, effectiveDate: -1, createdAt: -1 }).limit(300);
+    const rates = await BillingRate_js_1.default.find(query).sort({ rateType: 1, category: 1, sortOrder: 1, status: 1, effectiveDate: -1, createdAt: -1 }).limit(300);
     return res.json({ success: true, rates: rates.map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES });
 };
 exports.listBillingRates = listBillingRates;
@@ -324,7 +342,12 @@ const seedReferenceBillingRates = async (req, res) => {
             freeDays: 0,
             minimumAmount: 0,
         });
-        let rate = await BillingRate_js_1.default.findOne({ chargeCode: payload.chargeCode });
+        let rate = await BillingRate_js_1.default.findOne({
+            chargeCode: payload.chargeCode,
+            $or: payload.rateType === "local"
+                ? [{ rateType: "local" }, { rateType: { $exists: false } }]
+                : [{ rateType: payload.rateType }],
+        });
         if (rate && mode === "skip_existing") {
             createdOrUpdated.push(rate);
             continue;
@@ -338,7 +361,7 @@ const seedReferenceBillingRates = async (req, res) => {
         }
         createdOrUpdated.push(rate);
     }
-    const rates = await BillingRate_js_1.default.find({ chargeCode: { $in: exports.OTLI_REFERENCE_RATES.map((rate) => rate.chargeCode) } }).sort({ category: 1, sortOrder: 1 });
+    const rates = await BillingRate_js_1.default.find({ chargeCode: { $in: exports.OTLI_REFERENCE_RATES.map((rate) => rate.chargeCode) } }).sort({ rateType: 1, category: 1, sortOrder: 1 });
     (0, socket_js_1.emitToAdmins)("billing_rate:reference_applied", { count: rates.length, effectiveDate });
     return res.json({
         success: true,
@@ -358,14 +381,23 @@ const deleteBillingRate = async (req, res) => {
 };
 exports.deleteBillingRate = deleteBillingRate;
 const listActiveBillingRates = async (req, res) => {
-    const rates = await BillingRate_js_1.default.find({
+    const requestedRateType = req.query.rateType === "international" ? "international" : req.query.rateType === "local" ? "local" : "";
+    const query = {
         status: "active",
         effectiveDate: { $lte: new Date() },
-    }).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
+    };
+    if (requestedRateType) {
+        query.$or = requestedRateType === "local"
+            ? [{ rateType: "local" }, { rateType: { $exists: false } }]
+            : [{ rateType: "international" }];
+    }
+    const rates = await BillingRate_js_1.default.find(query).sort({ rateType: 1, category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
     const latestByCode = new Map();
     for (const rate of rates) {
-        if (!latestByCode.has(rate.chargeCode))
-            latestByCode.set(rate.chargeCode, rate);
+        const rateType = rate.rateType === "international" ? "international" : "local";
+        const key = `${rateType}:${rate.chargeCode}`;
+        if (!latestByCode.has(key))
+            latestByCode.set(key, rate);
     }
     return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate) });
 };

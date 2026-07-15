@@ -7,6 +7,7 @@ const mongoose_1 = __importDefault(require("mongoose"));
 const billingRateSchema = new mongoose_1.default.Schema({
     description: { type: String, required: true, trim: true },
     chargeCode: { type: String, required: true, uppercase: true, trim: true },
+    rateType: { type: String, enum: ["local", "international"], default: "local", index: true },
     category: {
         type: String,
         enum: ["container_yard_operation", "stripping_stuffing", "custom"],
@@ -42,11 +43,12 @@ const billingRateSchema = new mongoose_1.default.Schema({
     notes: { type: String, default: "", trim: true },
     sortOrder: { type: Number, default: 100, index: true },
 }, { timestamps: true });
-billingRateSchema.index({ chargeCode: 1, effectiveDate: -1 });
-billingRateSchema.index({ status: 1, category: 1, billingScope: 1, containerSize: 1, containerType: 1, loadStatus: 1, effectiveDate: -1 });
+billingRateSchema.index({ rateType: 1, chargeCode: 1, effectiveDate: -1 });
+billingRateSchema.index({ status: 1, rateType: 1, category: 1, billingScope: 1, containerSize: 1, containerType: 1, loadStatus: 1, effectiveDate: -1 });
 billingRateSchema.pre("validate", function () {
     this.description = String(this.description || "").trim();
     this.chargeCode = String(this.chargeCode || this.description || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    this.rateType = this.rateType === "international" ? "international" : "local";
     this.category = ["container_yard_operation", "stripping_stuffing", "custom"].includes(this.category) ? this.category : "container_yard_operation";
     this.billingScope = ["base", "storage", "optional_stripping_stuffing", "display_only"].includes(this.billingScope) ? this.billingScope : "base";
     this.containerSize = String(this.containerSize || "all");

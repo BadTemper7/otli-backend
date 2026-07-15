@@ -24,6 +24,16 @@ const documentSchema = new mongoose_1.default.Schema({
     sizeBytes: { type: Number, default: 0 },
     uploadedAt: { type: Date, default: Date.now },
 }, { _id: false });
+const legalConsentSchema = new mongoose_1.default.Schema({
+    termsAccepted: { type: Boolean, default: false },
+    privacyAccepted: { type: Boolean, default: false },
+    representativeAuthorityConfirmed: { type: Boolean, default: false },
+    termsVersion: { type: String, default: "" },
+    privacyPolicyVersion: { type: String, default: "" },
+    acceptedAt: { type: Date, default: null },
+    ipAddress: { type: String, default: "" },
+    userAgent: { type: String, default: "" },
+}, { _id: false });
 const userSchema = new mongoose_1.default.Schema({
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -40,6 +50,7 @@ const userSchema = new mongoose_1.default.Schema({
     representativeLastName: { type: String, default: "" },
     representativePosition: { type: String, default: "" },
     documents: { type: [documentSchema], default: [] },
+    legalConsent: { type: legalConsentSchema, default: () => ({}) },
     rejectionReason: { type: String, default: "" },
     rejectedAt: { type: Date, default: null },
     verifiedAt: { type: Date, default: null },
