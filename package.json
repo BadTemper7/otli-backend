@@ -1,17 +1,16 @@
 {
-  "name": "otli-server",
+  "name": "hostinger-test-api",
   "version": "1.0.0",
-  "description": "One True Logistics Inc. backend API",
+  "description": "Flat Hostinger test server with One True Logistics backend",
   "main": "server.js",
-  "type": "module",
   "engines": {
     "node": ">=20 <25",
     "npm": ">=10"
   },
   "scripts": {
-    "dev": "nodemon server.js",
     "start": "node server.js",
-    "seed": "node src/seed/seedSuperAdmin.js"
+    "dev": "nodemon server.js",
+    "seed": "node seed/seedSuperAdmin.js"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",
