@@ -2,15 +2,15 @@
   "name": "otli-server",
   "version": "1.0.0",
   "description": "One True Logistics Inc. backend API",
-  "main": "src/server.js",
+  "main": "server.js",
   "type": "module",
   "engines": {
     "node": ">=20 <25",
     "npm": ">=10"
   },
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
+    "dev": "nodemon server.js",
+    "start": "node server.js",
     "seed": "node src/seed/seedSuperAdmin.js"
   },
   "dependencies": {

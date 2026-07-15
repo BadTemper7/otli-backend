@@ -89,13 +89,29 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
   const databaseConnected = mongoose.connection.readyState === 1;
 
-  res.status(databaseConnected ? 200 : 503).json({
-    success: databaseConnected,
+  // Liveness endpoint: return 200 while the Node.js process is available so
+  // Hostinger does not restart the app during a temporary database outage.
+  res.status(200).json({
+    success: true,
+    status: databaseConnected ? "healthy" : "degraded",
     message: databaseConnected
       ? "OTLI API and database are running."
-      : "OTLI API is running, but MongoDB is not connected.",
+      : "OTLI API is running while MongoDB reconnects.",
     database: databaseConnected ? "connected" : "disconnected",
     environment: process.env.NODE_ENV || "development",
+  });
+});
+
+app.get("/api/readiness", (req, res) => {
+  const databaseConnected = mongoose.connection.readyState === 1;
+
+  res.status(databaseConnected ? 200 : 503).json({
+    success: databaseConnected,
+    ready: databaseConnected,
+    message: databaseConnected
+      ? "OTLI API is ready to receive database-backed requests."
+      : "OTLI API is online, but MongoDB is not ready yet.",
+    database: databaseConnected ? "connected" : "disconnected",
   });
 });
 
