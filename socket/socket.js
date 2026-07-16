@@ -10,10 +10,22 @@ const User_js_1 = __importDefault(require("../models/User.js"));
 let ioInstance = null;
 const initSocket = (httpServer, allowedOrigins = []) => {
     const io = new socket_io_1.Server(httpServer, {
+        path: "/socket.io",
+        serveClient: false,
+        transports: ["websocket", "polling"],
+        allowUpgrades: true,
         cors: {
             origin: allowedOrigins.length ? allowedOrigins : true,
             credentials: true,
         },
+    });
+    // Socket handshakes and transport responses must never be cached by a
+    // browser service worker, CDN, or reverse proxy.
+    io.engine.on("headers", (headers) => {
+        headers["Cache-Control"] = "no-store, no-cache, must-revalidate, proxy-revalidate";
+        headers.Pragma = "no-cache";
+        headers.Expires = "0";
+        headers["Surrogate-Control"] = "no-store";
     });
     io.use(async (socket, next) => {
         try {
