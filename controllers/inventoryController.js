@@ -13,24 +13,32 @@ const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
 };
-const getTeuFactor = (size) => {
-    if (Number(size) === 40)
-        return 2;
-    if (Number(size) === 45)
-        return 3;
+const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
+    const size = Number(containerSize) || 20;
+    const yardSize = Number(yardContainerSize) || 20;
+    if (yardSize === 20) {
+        if (size === 40) return 2;
+        if (size === 45) return 2.25;
+        return 1;
+    }
+    if (size === 20) return 0.5;
+    if (size === 45) return 1.125;
     return 1;
 };
 const recalculateBlockOccupancy = async (blockId) => {
     if (!blockId)
         return;
-    const [containers, bookingContainers] = await Promise.all([
+    const [block, containers, bookingContainers] = await Promise.all([
+        YardBlock_js_1.default.findById(blockId).select("containerSize"),
         InventoryContainer_js_1.default.find({ block: blockId, status: { $ne: "released" } }).select("containerSize"),
         Booking_js_1.default.find({
             assignedBlock: blockId,
             status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] },
         }).select("containerSize"),
     ]);
-    const occupiedSlots = [...containers, ...bookingContainers].reduce((total, container) => total + getTeuFactor(container.containerSize), 0);
+    if (!block)
+        return;
+    const occupiedSlots = [...containers, ...bookingContainers].reduce((total, container) => total + getYardCapacityUsage(container.containerSize, block.containerSize), 0);
     await YardBlock_js_1.default.findByIdAndUpdate(blockId, {
         occupiedSlots: Math.round(occupiedSlots * 100) / 100,
     });
@@ -216,6 +224,19 @@ const assignInventoryContainer = async (req, res) => {
     });
     if (occupiedSlot) {
         return res.status(409).json({ success: false, message: "That bay, row, and tier is already occupied." });
+    }
+    const [otherInventory, activeBookings] = await Promise.all([
+        InventoryContainer_js_1.default.find({ _id: { $ne: container._id }, block: block._id, status: { $ne: "released" } }).select("containerSize"),
+        Booking_js_1.default.find({
+            assignedBlock: block._id,
+            status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] },
+        }).select("containerSize"),
+    ]);
+    const usedCapacity = [...otherInventory, ...activeBookings].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
+    const incomingCapacity = getYardCapacityUsage(container.containerSize, block.containerSize);
+    if (usedCapacity + incomingCapacity > Number(block.teuSlots)) {
+        const unit = Number(block.containerSize) === 20 ? "TEU" : "FEU";
+        return res.status(400).json({ success: false, message: `Selected yard area does not have enough available ${unit} capacity.` });
     }
     const previousBlockId = container.block ? String(container.block) : "";
     container.area = area._id;

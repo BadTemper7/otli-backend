@@ -25,14 +25,28 @@ const safePaymentType = (paymentType) => {
         qrUrl: doc.qrSecureUrl || doc.qrUrl || "",
         instructions: doc.instructions || "",
         status: doc.status,
-        sortOrder: Number(doc.sortOrder) || 100,
+        sortOrder: Number.isFinite(Number(doc.sortOrder)) ? Number(doc.sortOrder) : 100,
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
     };
 };
 exports.safePaymentType = safePaymentType;
+const ensureDefaultCashPaymentType = async () => {
+    const existing = await PaymentType_js_1.default.findOne({ type: "cash", name: /^Cash$/i });
+    if (existing) return existing;
+    return PaymentType_js_1.default.create({
+        type: "cash",
+        name: "Cash",
+        bankName: "",
+        accountNumber: "",
+        accountName: "",
+        instructions: "Pay cash at the authorized cashier and keep the official receipt.",
+        status: "active",
+        sortOrder: 0,
+    });
+};
 const normalizePayload = (body = {}) => ({
-    type: body.type === "ewallet" ? "ewallet" : "bank",
+    type: ["cash", "bank", "ewallet"].includes(body.type) ? body.type : "cash",
     name: String(body.name || "").trim(),
     bankName: String(body.bankName || "").trim(),
     accountNumber: String(body.accountNumber || "").trim(),
@@ -45,9 +59,9 @@ const normalizePayload = (body = {}) => ({
 const validatePayload = (payload) => {
     if (!payload.name)
         return "Payment name is required.";
-    if (!payload.accountNumber)
+    if (payload.type !== "cash" && !payload.accountNumber)
         return "Account number is required.";
-    if (!payload.accountName)
+    if (payload.type !== "cash" && !payload.accountName)
         return "Account owner name is required.";
     if (payload.type === "bank" && !payload.bankName)
         return "Bank name is required for bank payment types.";
@@ -69,6 +83,7 @@ const uploadQr = async (file, paymentName) => {
     };
 };
 const listPaymentTypes = async (req, res) => {
+    await ensureDefaultCashPaymentType();
     const { status, type, search } = req.query;
     const query = {};
     if (status && status !== "all")
@@ -89,6 +104,7 @@ const listPaymentTypes = async (req, res) => {
 };
 exports.listPaymentTypes = listPaymentTypes;
 const listActivePaymentTypes = async (req, res) => {
+    await ensureDefaultCashPaymentType();
     const paymentTypes = await PaymentType_js_1.default.find({ status: "active" }).sort({ sortOrder: 1, type: 1, name: 1 });
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };

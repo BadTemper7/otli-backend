@@ -25,7 +25,6 @@ const ACTIVE_BOOKING_STATUSES = [
 ];
 const TERMINAL_BOOKING_STATUSES = ["rejected", "cancelled", "completed_gate_out_done"];
 const normalizeContainerNumber = (value = "") => String(value).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
-const isValidContainerNumber = (value = "") => /^[A-Z]{4}\d{7}$/.test(normalizeContainerNumber(value));
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
@@ -38,12 +37,25 @@ const getTeuFactor = (size) => {
         return 3;
     return 1;
 };
-const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1, containerSize = 20 }) => {
-    const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1) * getTeuFactor(containerSize);
+const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {
+    const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1);
     return Math.max(Math.round(capacity * 100) / 100, 1);
 };
+const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
+    const size = Number(containerSize) || 20;
+    const yardSize = Number(yardContainerSize) || 20;
+    if (yardSize === 20) {
+        if (size === 40) return 2;
+        if (size === 45) return 2.25;
+        return 1;
+    }
+    if (size === 20) return 0.5;
+    if (size === 45) return 1.125;
+    return 1;
+};
+const getYardCapacityUnit = (yardContainerSize) => Number(yardContainerSize) === 20 ? "TEU" : "FEU";
 const ensureAreaLocationBlock = async (area) => {
-    const existingBlock = await YardBlock_js_1.default.findOne({ area: area._id }).sort({ sortOrder: 1, code: 1, name: 1 });
+    const existingBlock = await YardBlock_js_1.default.findOne({ area: area._id }).sort({ code: 1, name: 1 });
     if (existingBlock)
         return existingBlock;
     const lineCount = toPositive(area.lineCount, 1);
@@ -69,7 +81,6 @@ const ensureAreaLocationBlock = async (area) => {
 const bookingPreAdviceDocumentLabels = {
     deliveryOrder: "Delivery Order",
     bookingConfirmation: "Booking Confirmation",
-    eir: "EIR",
     packingList: "Packing List",
     customsClearance: "Customs Clearance",
     otherDocument: "Other Document",
@@ -231,10 +242,10 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         return {
             rate: rate._id,
             chargeCode: rate.chargeCode,
-            description: rate.chargeCode === "LIFT_ON_20"
-                ? "Lift In Charge"
-                : rate.chargeCode === "LIFT_OFF_20"
-                    ? "Lift Out Charge"
+            description: String(rate.chargeCode || "").startsWith("LIFT_ON")
+                ? "Lift On Charge"
+                : String(rate.chargeCode || "").startsWith("LIFT_OFF")
+                    ? "Lift Off Charge"
                     : rate.description,
             unit,
             quantity: Math.round(quantity * 100) / 100,
@@ -286,9 +297,14 @@ exports.computeBookingBilling = computeBookingBilling;
 const refreshComputedBilling = async (booking) => {
     if (!booking)
         return booking;
-    const canRefresh = ["gate_out_requested", "gate_out_approved"].includes(booking.status)
-        && ["unpaid", "payment_rejected"].includes(booking.billingStatus)
-        && Boolean(booking.outDate);
+    const canRefresh = [
+        "approved_area_assigned",
+        "gate_in_approved",
+        "stored_in_assigned_area",
+        "gate_out_requested",
+        "gate_out_approved",
+    ].includes(booking.status)
+        && ["unpaid", "payment_rejected"].includes(booking.billingStatus);
     if (!canRefresh)
         return booking;
     const result = await (0, exports.computeBookingBilling)(booking, { persist: true });
@@ -520,11 +536,14 @@ const activeBookingFilterForBlock = (blockId) => ({
 const recalculateBlockOccupancy = async (blockId) => {
     if (!blockId)
         return;
-    const [inventoryContainers, bookingContainers] = await Promise.all([
+    const [block, inventoryContainers, bookingContainers] = await Promise.all([
+        YardBlock_js_1.default.findById(blockId).select("containerSize"),
         InventoryContainer_js_1.default.find({ block: blockId, status: { $ne: "released" } }).select("containerSize"),
         Booking_js_1.default.find(activeBookingFilterForBlock(blockId)).select("containerSize"),
     ]);
-    const occupied = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getTeuFactor(item.containerSize), 0);
+    if (!block)
+        return;
+    const occupied = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
     await YardBlock_js_1.default.findByIdAndUpdate(blockId, {
         occupiedSlots: Math.round(occupied * 100) / 100,
     });
@@ -596,8 +615,14 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
         InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize"),
         Booking_js_1.default.find({ _id: { $ne: bookingId }, assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("containerSize"),
     ]);
-    const usedTeu = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getTeuFactor(item.containerSize), 0);
-    const containerTeu = getTeuFactor(containerSize);
+    const usedCapacity = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
+    const containerCapacity = getYardCapacityUsage(containerSize, block.containerSize);
+    const capacityUnit = getYardCapacityUnit(block.containerSize);
+    if (usedCapacity + containerCapacity > Number(block.teuSlots)) {
+        const error = new Error(`Selected yard area does not have enough available ${capacityUnit} capacity.`);
+        error.statusCode = 400;
+        throw error;
+    }
     return {
         area,
         block,
@@ -605,7 +630,7 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
         row: nextRow,
         tier: nextTier,
         slotNumber: `${block.code}-B${nextBay}-R${nextRow}-T${nextTier}`,
-        remainingAfterApproval: Math.max(Number(block.teuSlots) - usedTeu - containerTeu, 0),
+        remainingAfterApproval: Math.max(Number(block.teuSlots) - usedCapacity - containerCapacity, 0),
     };
 };
 const getSlotKey = (bay, row, tier) => `${bay}-${row}-${tier}`;
@@ -687,9 +712,6 @@ const createClientBooking = async (req, res) => {
         return res.status(400).json({ success: false, message: dateRange.message });
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
-    if (!isValidContainerNumber(normalizedContainer)) {
-        return res.status(400).json({ success: false, message: "Container number must follow the format ABCD1234567." });
-    }
     const activeDuplicate = await Booking_js_1.default.findOne({
         containerNumber: normalizedContainer,
         status: { $nin: TERMINAL_BOOKING_STATUSES },
@@ -785,9 +807,6 @@ const resubmitClientBooking = async (req, res) => {
         return res.status(400).json({ success: false, message: dateRange.message });
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
-    if (!isValidContainerNumber(normalizedContainer)) {
-        return res.status(400).json({ success: false, message: "Container number must follow the format ABCD1234567." });
-    }
     const activeDuplicate = await Booking_js_1.default.findOne({
         _id: { $ne: booking._id },
         containerNumber: normalizedContainer,
@@ -929,7 +948,14 @@ const approveBooking = async (req, res) => {
     booking.assignedSlotNumber = plan.slotNumber;
     booking.assignedAt = new Date();
     booking.assignedBy = req.user._id;
-    addHistory(booking, { remarks: "Booking approved and yard area assigned.", changedBy: req.user._id });
+    booking.storageStartDate = booking.storageStartDate || booking.inDate || booking.expectedArrivalDate || booking.approvedAt;
+    const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
+    addHistory(booking, {
+        remarks: billingResult.hasMatchedRates
+            ? `Booking approved, yard area assigned, and initial Lift On, Lift Off, and storage billing added at PHP ${billingResult.total.toLocaleString()}. Storage charges refresh daily.`
+            : "Booking approved and yard area assigned. Billing will appear when matching active rates are configured.",
+        changedBy: req.user._id,
+    });
     await booking.save();
     await recalculateBlockOccupancy(plan.block._id);
     if (previousBlockId && previousBlockId !== String(plan.block._id))
@@ -954,7 +980,7 @@ const approveBooking = async (req, res) => {
         qrCodeValue: booking.qrCodeValue,
         trackingUrl: getBookingTrackingUrl(booking.bookingNumber),
     });
-    return res.json({ success: true, message: "Booking approved and yard area assigned.", booking: payload });
+    return res.json({ success: true, message: "Booking approved, yard area assigned, and billing initialized.", booking: payload });
 };
 exports.approveBooking = approveBooking;
 const rejectBooking = async (req, res) => {
@@ -1052,11 +1078,11 @@ const markBookingStored = async (req, res) => {
     booking.storedAt = storedAt;
     booking.storedBy = booking.storedBy || req.user._id;
     booking.storageStartDate = booking.storageStartDate || booking.inDate || storedAt;
-    const billingResult = booking.outDate ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
+    const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
     addHistory(booking, {
         remarks: billingResult?.hasMatchedRates
             ? `${wasAlreadyStored ? "Stored container billing refreshed" : "Container stored in assigned yard location"}. Billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
-            : "Container stored in assigned yard location. Final billing will compute after the client submits Date Out in the gate-out request.",
+            : "Container stored in the assigned yard location. Configure matching active Lift On, Lift Off, and Storage rates to generate billing line items.",
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1073,7 +1099,7 @@ const markBookingStored = async (req, res) => {
         { label: "Assigned Area", value: payload.assignedAreaName },
         { label: "Slot", value: payload.assignedSlotNumber },
     ]);
-    return res.json({ success: true, message: booking.outDate ? (wasAlreadyStored ? "Stored container billing refreshed." : "Container marked as stored in assigned area and billing computed.") : "Container marked as stored. Final billing will compute after Date Out is submitted in the gate-out request.", booking: payload });
+    return res.json({ success: true, message: wasAlreadyStored ? "Stored container billing refreshed." : "Container marked as stored and billing refreshed.", booking: payload });
 };
 exports.markBookingStored = markBookingStored;
 const updateBookingBillingOperation = async (req, res) => {
@@ -1087,7 +1113,7 @@ const updateBookingBillingOperation = async (req, res) => {
     const rateType = normalizeRateType(req.body.rateType ?? booking.rateType);
     booking.serviceType = serviceType;
     booking.rateType = rateType;
-    const shouldRecompute = ["gate_out_requested", "gate_out_approved"].includes(booking.status) && Boolean(booking.outDate);
+    const shouldRecompute = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status);
     const billingResult = shouldRecompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
     const serviceLabel = serviceType === "stripping_stuffing_mano" ? "Stripping / Stuffing with Mano" : "Container Yard Operation";
     const rateTypeLabel = rateType === "international" ? "International" : "Local";
@@ -1130,7 +1156,7 @@ const addBookingAdditionalCharge = async (req, res) => {
         addedBy: req.user._id,
         addedAt: new Date(),
     });
-    const canCompute = Boolean(booking.outDate);
+    const canCompute = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status);
     const billingResult = canCompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
     addHistory(booking, {
         remarks: billingResult
@@ -1160,7 +1186,7 @@ const deleteBookingAdditionalCharge = async (req, res) => {
         return res.status(404).json({ success: false, message: "Additional charge not found." });
     const description = charge.description;
     charge.deleteOne();
-    const billingResult = booking.outDate ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
+    const billingResult = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status) ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
     addHistory(booking, {
         remarks: billingResult
             ? `Additional billing charge removed: ${description}. Bill recomputed at PHP ${billingResult.total.toLocaleString()}.`

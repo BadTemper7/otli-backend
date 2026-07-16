@@ -96,13 +96,6 @@ const yardBlockSchema = new mongoose_1.default.Schema({
         trim: true,
     },
 }, { timestamps: true });
-const getContainerTeuFactor = (size) => {
-    if (Number(size) === 40)
-        return 2;
-    if (Number(size) === 45)
-        return 3;
-    return 1;
-};
 yardBlockSchema.index({ area: 1, code: 1 }, { unique: true });
 yardBlockSchema.pre("validate", function () {
     if (this.code)
@@ -111,11 +104,12 @@ yardBlockSchema.pre("validate", function () {
     this.rowCount = Math.max(Number(this.rowCount) || 1, 1);
     this.tierCount = Math.max(Number(this.tierCount) || 1, 1);
     this.containerSize = [20, 40, 45].includes(Number(this.containerSize)) ? Number(this.containerSize) : 20;
-    if (!this.teuSlots || Number(this.teuSlots) < 1) {
-        const autoCapacity = this.bayCount * this.rowCount * this.tierCount * getContainerTeuFactor(this.containerSize);
-        this.teuSlots = Math.max(Math.round(autoCapacity * 100) / 100, 1);
-    }
-    this.teuSlots = Math.max(Number(this.teuSlots) || 1, 1);
+    const requestedCapacity = Math.max(Number(this.teuSlots) || 1, 1);
+    const rowTierBoxes = Math.max(this.rowCount * this.tierCount, 1);
+    const requiredBays = Math.ceil(requestedCapacity / rowTierBoxes);
+    this.bayCount = Math.max(this.bayCount, requiredBays);
+    const boxCount = this.bayCount * this.rowCount * this.tierCount;
+    this.teuSlots = Math.min(requestedCapacity, boxCount);
     this.occupiedSlots = Math.min(Math.max(Number(this.occupiedSlots) || 0, 0), this.teuSlots);
     this.x = Math.max(Number(this.x) || 0, 0);
     this.y = Math.max(Number(this.y) || 0, 0);

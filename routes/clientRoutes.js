@@ -21,8 +21,8 @@ router.get("/account-status", (req, res) => {
         canAccessBookings: ["active", "verified"].includes(req.user.status),
     });
 });
-router.get("/rates", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(billingRateController_js_1.listActiveBillingRates));
-router.get("/payment-types", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(paymentTypeController_js_1.listActivePaymentTypes));
+router.get("/rates", (0, asyncHandler_js_1.default)(billingRateController_js_1.listActiveBillingRates));
+router.get("/payment-types", (0, asyncHandler_js_1.default)(paymentTypeController_js_1.listActivePaymentTypes));
 router.get("/bookings", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.listClientBookings));
 router.post("/bookings", authMiddleware_js_1.verifiedClientOnly, uploadMiddleware_js_1.bookingPreAdviceUpload, (0, asyncHandler_js_1.default)(bookingController_js_1.createClientBooking));
 router.get("/bookings/:id", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.getClientBooking));

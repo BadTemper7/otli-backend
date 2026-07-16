@@ -18,16 +18,18 @@ const toContainerSize = (value, fallback = 20) => {
     const size = Number(value);
     return [20, 40, 45].includes(size) ? size : fallback;
 };
-const getContainerTeuFactor = (size) => {
-    if (Number(size) === 40)
-        return 2;
-    if (Number(size) === 45)
-        return 3;
-    return 1;
-};
-const calculateCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1, containerSize = 20 }) => {
-    const capacity = toPositiveNumber(lineCount, 1) * toPositiveNumber(rowCount, 1) * toPositiveNumber(tierCount, 1) * getContainerTeuFactor(containerSize);
+const getCapacityUnit = (containerSize) => Number(containerSize) === 20 ? "TEU" : "FEU";
+const calculateCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {
+    const capacity = toPositiveNumber(lineCount, 1) * toPositiveNumber(rowCount, 1) * toPositiveNumber(tierCount, 1);
     return Math.max(Math.round(capacity * 100) / 100, 1);
+};
+const normalizeDimensionsForCapacity = ({ lineCount = 1, rowCount = 1, tierCount = 1, capacity = 1 }) => {
+    const rows = toPositiveNumber(rowCount, 1);
+    const tiers = toPositiveNumber(tierCount, 1);
+    const requestedCapacity = toPositiveNumber(capacity, 1);
+    const minimumBays = Math.ceil(requestedCapacity / Math.max(rows * tiers, 1));
+    const bays = Math.max(toPositiveNumber(lineCount, 1), minimumBays);
+    return { lineCount: bays, rowCount: rows, tierCount: tiers, boxCount: bays * rows * tiers, capacity: requestedCapacity };
 };
 const buildAreaCode = (name = "AREA") => {
     const base = String(name)
@@ -57,14 +59,16 @@ const safeArea = (area, blockStats = null) => {
         name: doc.name,
         code: doc.code,
         lineCount: Number(doc.lineCount) || 1,
+        bayCount: Number(doc.lineCount) || 1,
         rowCount: Number(doc.rowCount) || 1,
         tierCount: Number(doc.tierCount) || 1,
         containerSize: Number(doc.containerSize) || 20,
+        capacityUnit: getCapacityUnit(doc.containerSize),
+        boxCount: (Number(doc.lineCount) || 1) * (Number(doc.rowCount) || 1) * (Number(doc.tierCount) || 1),
         capacityTeu,
         description: doc.description || "",
         status: doc.status,
         color: doc.color || "#0f766e",
-        sortOrder: doc.sortOrder || 0,
         blockCount: blockStats?.blockCount ?? doc.blockCount ?? 0,
         totalTeuSlots: totalBlockTeuSlots,
         occupiedSlots,
@@ -91,6 +95,8 @@ const safeBlock = (block) => {
         rowCount: Number(doc.rowCount) || 1,
         tierCount: Number(doc.tierCount) || 1,
         containerSize: Number(doc.containerSize) || 20,
+        capacityUnit: getCapacityUnit(doc.containerSize),
+        boxCount: (Number(doc.bayCount) || 1) * (Number(doc.rowCount) || 1) * (Number(doc.tierCount) || 1),
         capacityTeu: teuSlots,
         teuSlots,
         x: Number(doc.x) || 0,
@@ -98,7 +104,6 @@ const safeBlock = (block) => {
         width: Math.max(Number(doc.width) || 170, 60),
         height: Math.max(Number(doc.height) || 90, 40),
         rotation: Number(doc.rotation) || 0,
-        sortOrder: Number(doc.sortOrder) || 0,
         occupiedSlots,
         availableSlots: Math.max(teuSlots - occupiedSlots, 0),
         utilizationPercent: teuSlots > 0 ? Math.round((occupiedSlots / teuSlots) * 100) : 0,
@@ -181,45 +186,44 @@ const loadAreaStats = async () => {
     }, {});
 };
 const getYardSummary = async (req, res) => {
-    const [areaCount, blockCount, areaTotals, blockTotals] = await Promise.all([
-        YardArea_js_1.default.countDocuments(),
-        YardBlock_js_1.default.countDocuments(),
-        YardArea_js_1.default.aggregate([
-            {
-                $group: {
-                    _id: null,
-                    totalAreaCapacityTeu: { $sum: "$capacityTeu" },
-                },
-            },
-        ]),
-        YardBlock_js_1.default.aggregate([
-            {
-                $group: {
-                    _id: null,
-                    totalTeuSlots: { $sum: "$teuSlots" },
-                    occupiedSlots: { $sum: "$occupiedSlots" },
-                },
-            },
-        ]),
+    const [areas, blocks] = await Promise.all([
+        YardArea_js_1.default.find().lean(),
+        YardBlock_js_1.default.find().lean(),
     ]);
-    const areaCapacity = areaTotals[0]?.totalAreaCapacityTeu || 0;
-    const totals = blockTotals[0] || { totalTeuSlots: 0, occupiedSlots: 0 };
+    const areaTotals = areas.reduce((totals, area) => {
+        const capacity = Number(area.capacityTeu) || 0;
+        const boxes = (Number(area.lineCount) || 1) * (Number(area.rowCount) || 1) * (Number(area.tierCount) || 1);
+        if (Number(area.containerSize) === 20)
+            totals.totalAreaCapacityTeu += capacity;
+        else
+            totals.totalAreaCapacityFeu += capacity;
+        totals.totalBoxes += boxes;
+        return totals;
+    }, { totalAreaCapacityTeu: 0, totalAreaCapacityFeu: 0, totalBoxes: 0 });
+    const blockTotals = blocks.reduce((totals, block) => {
+        const capacity = Number(block.teuSlots) || 0;
+        if (Number(block.containerSize) === 20)
+            totals.totalBlockCapacityTeu += capacity;
+        else
+            totals.totalBlockCapacityFeu += capacity;
+        totals.occupiedSlots += Number(block.occupiedSlots) || 0;
+        return totals;
+    }, { totalBlockCapacityTeu: 0, totalBlockCapacityFeu: 0, occupiedSlots: 0 });
     return res.json({
         success: true,
         summary: {
-            areaCount,
-            blockCount,
-            totalAreaCapacityTeu: areaCapacity,
-            totalTeuSlots: totals.totalTeuSlots || 0,
-            occupiedSlots: totals.occupiedSlots || 0,
-            availableSlots: Math.max((totals.totalTeuSlots || 0) - (totals.occupiedSlots || 0), 0),
-            remainingAreaCapacityTeu: Math.max(areaCapacity - (totals.totalTeuSlots || 0), 0),
+            areaCount: areas.length,
+            blockCount: blocks.length,
+            ...areaTotals,
+            ...blockTotals,
+            totalTeuSlots: blockTotals.totalBlockCapacityTeu,
+            occupiedSlots: blockTotals.occupiedSlots,
         },
     });
 };
 exports.getYardSummary = getYardSummary;
 const listYardAreas = async (req, res) => {
-    const areas = await YardArea_js_1.default.find().sort({ sortOrder: 1, name: 1 });
+    const areas = await YardArea_js_1.default.find().sort({ name: 1 });
     const statsByArea = await loadAreaStats();
     return res.json({
         success: true,
@@ -228,13 +232,13 @@ const listYardAreas = async (req, res) => {
 };
 exports.listYardAreas = listYardAreas;
 const listApprovalYardBlocks = async (req, res) => {
-    const areas = await YardArea_js_1.default.find().sort({ sortOrder: 1, name: 1 });
+    const areas = await YardArea_js_1.default.find().sort({ name: 1 });
     const areaLocations = [];
     for (const area of areas) {
         await syncDefaultBlockWithArea(area);
         let areaLocation = await YardBlock_js_1.default.findOne({ area: area._id })
             .populate("area", "name code")
-            .sort({ sortOrder: 1, code: 1, name: 1 });
+            .sort({ code: 1, name: 1 });
         if (!areaLocation) {
             areaLocation = await createDefaultBlockForArea(area);
             await areaLocation.populate("area", "name code");
@@ -250,15 +254,24 @@ const listApprovalYardBlocks = async (req, res) => {
 };
 exports.listApprovalYardBlocks = listApprovalYardBlocks;
 const createYardArea = async (req, res) => {
-    const { name, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color, sortOrder, code } = req.body;
+    const { name, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color, code } = req.body;
     if (!name) {
         return res.status(400).json({ success: false, message: "Area name is required." });
     }
     const size = toContainerSize(containerSize, 20);
-    const lineValue = toPositiveNumber(lineCount, 1);
-    const rowValue = toPositiveNumber(rowCount, 1);
-    const tierValue = toPositiveNumber(tierCount, 1);
-    const computedCapacity = calculateCapacityTeu({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue, containerSize: size });
+    const requestedLine = toPositiveNumber(lineCount, 1);
+    const requestedRow = toPositiveNumber(rowCount, 1);
+    const requestedTier = toPositiveNumber(tierCount, 1);
+    const computedCapacity = calculateCapacityTeu({ lineCount: requestedLine, rowCount: requestedRow, tierCount: requestedTier });
+    const dimensions = normalizeDimensionsForCapacity({
+        lineCount: requestedLine,
+        rowCount: requestedRow,
+        tierCount: requestedTier,
+        capacity: capacityTeu ? toPositiveNumber(capacityTeu, computedCapacity) : computedCapacity,
+    });
+    const lineValue = dimensions.lineCount;
+    const rowValue = dimensions.rowCount;
+    const tierValue = dimensions.tierCount;
     const areaCode = code ? String(code).toUpperCase().trim() : await makeUniqueAreaCode(name);
     const exists = await YardArea_js_1.default.findOne({ code: areaCode });
     if (exists) {
@@ -271,11 +284,10 @@ const createYardArea = async (req, res) => {
         rowCount: rowValue,
         tierCount: tierValue,
         containerSize: size,
-        capacityTeu: capacityTeu ? toPositiveNumber(capacityTeu, computedCapacity) : computedCapacity,
+        capacityTeu: dimensions.capacity,
         description,
         status: status || "active",
         color: color || "#0f766e",
-        sortOrder: toNumber(sortOrder, 0),
     });
     await createDefaultBlockForArea(area);
     const payload = safeArea(area);
@@ -288,7 +300,7 @@ const updateYardArea = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    const { name, code, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color, sortOrder } = req.body;
+    const { name, code, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color } = req.body;
     if (code) {
         const normalizedCode = String(code).toUpperCase().trim();
         const exists = await YardArea_js_1.default.findOne({ code: normalizedCode, _id: { $ne: area._id } });
@@ -306,13 +318,20 @@ const updateYardArea = async (req, res) => {
         lineCount: area.lineCount,
         rowCount: area.rowCount,
         tierCount: area.tierCount,
-        containerSize: area.containerSize,
     });
-    area.capacityTeu = capacityTeu === undefined ? area.capacityTeu : toPositiveNumber(capacityTeu, computedCapacity);
+    const dimensions = normalizeDimensionsForCapacity({
+        lineCount: area.lineCount,
+        rowCount: area.rowCount,
+        tierCount: area.tierCount,
+        capacity: capacityTeu === undefined ? area.capacityTeu : toPositiveNumber(capacityTeu, computedCapacity),
+    });
+    area.lineCount = dimensions.lineCount;
+    area.rowCount = dimensions.rowCount;
+    area.tierCount = dimensions.tierCount;
+    area.capacityTeu = dimensions.capacity;
     area.description = description ?? area.description;
     area.status = status ?? area.status;
     area.color = color ?? area.color;
-    area.sortOrder = sortOrder === undefined ? area.sortOrder : toNumber(sortOrder, area.sortOrder);
     await area.save();
     await syncDefaultBlockWithArea(area);
     const payload = safeArea(area);
@@ -345,7 +364,7 @@ const listYardBlocks = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    let blocks = await YardBlock_js_1.default.find({ area: area._id }).populate("area", "name code").sort({ sortOrder: 1, code: 1, name: 1 });
+    let blocks = await YardBlock_js_1.default.find({ area: area._id }).populate("area", "name code").sort({ code: 1, name: 1 });
     if (blocks.length === 0) {
         const defaultBlock = await createDefaultBlockForArea(area);
         blocks = [defaultBlock];
@@ -362,7 +381,7 @@ const createYardBlock = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    const { name, code, blockType, lineCount, bayCount, rowCount, tierCount, containerSize, capacityTeu, teuSlots, occupiedSlots, x, y, width, height, rotation, sortOrder, status, notes, } = req.body;
+    const { name, code, blockType, lineCount, bayCount, rowCount, tierCount, containerSize, capacityTeu, teuSlots, occupiedSlots, x, y, width, height, rotation, status, notes, } = req.body;
     if (!name || !code) {
         return res.status(400).json({ success: false, message: "Container block name and code are required." });
     }
@@ -375,16 +394,18 @@ const createYardBlock = async (req, res) => {
     const lineValue = toPositiveNumber(lineCount ?? bayCount, area.lineCount || 1);
     const rowValue = toPositiveNumber(rowCount, area.rowCount || 1);
     const tierValue = toPositiveNumber(tierCount, area.tierCount || 1);
-    const computedCapacity = calculateCapacityTeu({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue, containerSize: size });
-    const capacity = toPositiveNumber(capacityTeu ?? teuSlots, computedCapacity);
+    const computedCapacity = calculateCapacityTeu({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue });
+    const requestedCapacity = toPositiveNumber(capacityTeu ?? teuSlots, computedCapacity);
+    const dimensions = normalizeDimensionsForCapacity({ lineCount: lineValue, rowCount: rowValue, tierCount: tierValue, capacity: requestedCapacity });
+    const capacity = dimensions.capacity;
     const block = await YardBlock_js_1.default.create({
         area: area._id,
         name,
         code: normalizedCode,
         blockType: blockType || "standard",
-        bayCount: lineValue,
-        rowCount: rowValue,
-        tierCount: tierValue,
+        bayCount: dimensions.lineCount,
+        rowCount: dimensions.rowCount,
+        tierCount: dimensions.tierCount,
         containerSize: size,
         teuSlots: capacity,
         occupiedSlots: Math.min(Math.max(toNumber(occupiedSlots, 0), 0), capacity),
@@ -393,7 +414,6 @@ const createYardBlock = async (req, res) => {
         width: Math.max(toNumber(width, 170), 60),
         height: Math.max(toNumber(height, 90), 40),
         rotation: toNumber(rotation, 0),
-        sortOrder: toNumber(sortOrder, 0),
         status: status || "active",
         notes,
     });
@@ -410,7 +430,7 @@ const updateYardBlock = async (req, res) => {
         return res.status(404).json({ success: false, message: "Inventory block not found." });
     }
     const area = await YardArea_js_1.default.findById(block.area);
-    const { name, code, blockType, lineCount, bayCount, rowCount, tierCount, containerSize, capacityTeu, teuSlots, occupiedSlots, x, y, width, height, rotation, sortOrder, status, notes, } = req.body;
+    const { name, code, blockType, lineCount, bayCount, rowCount, tierCount, containerSize, capacityTeu, teuSlots, occupiedSlots, x, y, width, height, rotation, status, notes, } = req.body;
     if (code) {
         const normalizedCode = String(code).toUpperCase().trim();
         const exists = await YardBlock_js_1.default.findOne({ area: block.area, code: normalizedCode, _id: { $ne: block._id } });
@@ -429,9 +449,18 @@ const updateYardBlock = async (req, res) => {
         lineCount: block.bayCount,
         rowCount: block.rowCount,
         tierCount: block.tierCount,
-        containerSize: block.containerSize,
     });
-    block.teuSlots = capacityTeu === undefined && teuSlots === undefined ? Math.max(block.teuSlots, 1) : toPositiveNumber(capacityTeu ?? teuSlots, fallbackCapacity);
+    const requestedCapacity = capacityTeu === undefined && teuSlots === undefined ? Math.max(block.teuSlots, 1) : toPositiveNumber(capacityTeu ?? teuSlots, fallbackCapacity);
+    const dimensions = normalizeDimensionsForCapacity({
+        lineCount: block.bayCount,
+        rowCount: block.rowCount,
+        tierCount: block.tierCount,
+        capacity: requestedCapacity,
+    });
+    block.bayCount = dimensions.lineCount;
+    block.rowCount = dimensions.rowCount;
+    block.tierCount = dimensions.tierCount;
+    block.teuSlots = dimensions.capacity;
     block.occupiedSlots = occupiedSlots === undefined ? block.occupiedSlots : Math.max(toNumber(occupiedSlots, block.occupiedSlots), 0);
     block.occupiedSlots = Math.min(block.occupiedSlots, block.teuSlots);
     block.x = x === undefined ? block.x : Math.max(toNumber(x, block.x), 0);
@@ -439,7 +468,6 @@ const updateYardBlock = async (req, res) => {
     block.width = width === undefined ? block.width : Math.max(toNumber(width, block.width), 60);
     block.height = height === undefined ? block.height : Math.max(toNumber(height, block.height), 40);
     block.rotation = rotation === undefined ? block.rotation : toNumber(rotation, block.rotation);
-    block.sortOrder = sortOrder === undefined ? block.sortOrder : toNumber(sortOrder, block.sortOrder);
     block.status = status ?? block.status;
     block.notes = notes ?? block.notes;
     await block.save();

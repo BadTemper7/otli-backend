@@ -12,6 +12,7 @@ const billingRateController_js_1 = require("../controllers/billingRateController
 const bookingController_js_1 = require("../controllers/bookingController.js");
 const authMiddleware_js_1 = require("../middleware/authMiddleware.js");
 const paymentTypeController_js_1 = require("../controllers/paymentTypeController.js");
+const reportController_js_1 = require("../controllers/reportController.js");
 const uploadMiddleware_js_1 = require("../middleware/uploadMiddleware.js");
 const asyncHandler_js_1 = __importDefault(require("../utils/asyncHandler.js"));
 const router = express_1.default.Router();
@@ -24,6 +25,7 @@ router.patch("/users/:id", (0, authMiddleware_js_1.requirePermission)("userManag
 router.delete("/users/:id", (0, authMiddleware_js_1.requirePermission)("userManagement", "delete"), (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser));
 router.patch("/clients/:id/approve", (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"), (0, asyncHandler_js_1.default)(adminController_js_1.approveClient));
 router.patch("/clients/:id/reject", (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"), (0, asyncHandler_js_1.default)(adminController_js_1.rejectClient));
+router.get("/reports/yard-containers", (0, authMiddleware_js_1.requirePermission)("reports", "view"), (0, asyncHandler_js_1.default)(reportController_js_1.getYardContainerReport));
 router.get("/bookings/summary", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingSummary));
 router.get("/bookings", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
 router.get("/bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));

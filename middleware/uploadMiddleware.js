@@ -36,7 +36,6 @@ exports.clientRegistrationUpload = exports.upload.fields([
     { name: "otherDocument", maxCount: 1 },
 ]);
 exports.preAdviceUpload = exports.upload.fields([
-    { name: "eir", maxCount: 1 },
     { name: "deliveryOrder", maxCount: 1 },
     { name: "bookingConfirmation", maxCount: 1 },
     { name: "packingList", maxCount: 1 },
@@ -44,7 +43,6 @@ exports.preAdviceUpload = exports.upload.fields([
     { name: "otherDocument", maxCount: 1 },
 ]);
 exports.bookingPreAdviceUpload = exports.upload.fields([
-    { name: "eir", maxCount: 1 },
     { name: "deliveryOrder", maxCount: 1 },
     { name: "bookingConfirmation", maxCount: 1 },
     { name: "packingList", maxCount: 1 },

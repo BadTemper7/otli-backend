@@ -13,7 +13,6 @@ const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
 const documentLabels = {
-    eir: "EIR",
     deliveryOrder: "Delivery Order",
     bookingConfirmation: "Booking Confirmation",
     packingList: "Packing List",
@@ -23,9 +22,6 @@ const documentLabels = {
 const requiredDocumentFields = ["deliveryOrder", "bookingConfirmation"];
 const normalizeContainerNumber = (value = "") => {
     return String(value).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
-};
-const isValidContainerNumber = (value = "") => {
-    return /^[A-Z]{4}\d{7}$/.test(normalizeContainerNumber(value));
 };
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
@@ -39,12 +35,24 @@ const getTeuFactor = (size) => {
     return 1;
 };
 const toPositive = (value, fallback = 1) => Math.max(toNumber(value, fallback), 1);
-const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1, containerSize = 20 }) => {
-    const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1) * getTeuFactor(containerSize);
+const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {
+    const capacity = toPositive(lineCount, 1) * toPositive(rowCount, 1) * toPositive(tierCount, 1);
     return Math.max(Math.round(capacity * 100) / 100, 1);
 };
+const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
+    const size = Number(containerSize) || 20;
+    const yardSize = Number(yardContainerSize) || 20;
+    if (yardSize === 20) {
+        if (size === 40) return 2;
+        if (size === 45) return 2.25;
+        return 1;
+    }
+    if (size === 20) return 0.5;
+    if (size === 45) return 1.125;
+    return 1;
+};
 const ensureAreaLocationBlock = async (area) => {
-    const existingBlock = await YardBlock_js_1.default.findOne({ area: area._id }).sort({ sortOrder: 1, code: 1, name: 1 });
+    const existingBlock = await YardBlock_js_1.default.findOne({ area: area._id }).sort({ code: 1, name: 1 });
     if (existingBlock)
         return existingBlock;
     const lineCount = toPositive(area.lineCount, 1);
@@ -84,8 +92,13 @@ const buildSequenceNumber = async (prefix, Model, fieldName) => {
 const recalculateBlockOccupancy = async (blockId) => {
     if (!blockId)
         return;
-    const containers = await InventoryContainer_js_1.default.find({ block: blockId, status: { $ne: "released" } }).select("containerSize");
-    const occupiedSlots = containers.reduce((total, container) => total + getTeuFactor(container.containerSize), 0);
+    const [block, containers] = await Promise.all([
+        YardBlock_js_1.default.findById(blockId).select("containerSize"),
+        InventoryContainer_js_1.default.find({ block: blockId, status: { $ne: "released" } }).select("containerSize"),
+    ]);
+    if (!block)
+        return;
+    const occupiedSlots = containers.reduce((total, container) => total + getYardCapacityUsage(container.containerSize, block.containerSize), 0);
     await YardBlock_js_1.default.findByIdAndUpdate(blockId, {
         occupiedSlots: Math.round(occupiedSlots * 100) / 100,
     });
@@ -231,10 +244,11 @@ const validateYardPlan = async ({ areaId, blockId, bay, row, tier, containerSize
         error.statusCode = 409;
         throw error;
     }
-    const usedTeu = Number(block.occupiedSlots) || 0;
-    const containerTeu = getTeuFactor(containerSize);
-    if (usedTeu + containerTeu > Number(block.teuSlots)) {
-        const error = new Error("Selected yard area does not have enough available TEU capacity.");
+    const usedCapacity = Number(block.occupiedSlots) || 0;
+    const containerCapacity = getYardCapacityUsage(containerSize, block.containerSize);
+    if (usedCapacity + containerCapacity > Number(block.teuSlots)) {
+        const capacityUnit = Number(block.containerSize) === 20 ? "TEU" : "FEU";
+        const error = new Error(`Selected yard area does not have enough available ${capacityUnit} capacity.`);
         error.statusCode = 400;
         throw error;
     }
@@ -261,9 +275,6 @@ const createClientPreAdvice = async (req, res) => {
         return res.status(400).json({ success: false, message: "Please complete all required pre-advice fields." });
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
-    if (!isValidContainerNumber(normalizedContainer)) {
-        return res.status(400).json({ success: false, message: "Container number must follow the format ABCD1234567." });
-    }
     const missingDocuments = requiredDocumentFields.filter((fieldName) => !req.files?.[fieldName]?.[0]);
     if (missingDocuments.length) {
         return res.status(400).json({
