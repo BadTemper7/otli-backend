@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const http = require("http");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const path = require("path");
@@ -236,7 +237,7 @@ app.get("/api/test", (req, res) => {
 
 // ==================== ONETRUE BACKEND ====================
 // OneTrue folders are kept directly in the project root.
-// The existing test server and app.listen setup remain unchanged.
+// The OneTrue API and Socket.IO share the same HTTP server.
 const authRoutes = require("./routes/authRoutes.js").default;
 const adminRoutes = require("./routes/adminRoutes.js").default;
 const clientRoutes = require("./routes/clientRoutes.js").default;
@@ -272,9 +273,21 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
-app.listen(PORT, () => {
+// Start HTTP and Socket.IO server
+const { initSocket } = require("./socket/socket.js");
+const httpServer = http.createServer(app);
+const socketAllowedOrigins = String(
+  process.env.SOCKET_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "",
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+initSocket(httpServer, socketAllowedOrigins);
+
+httpServer.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`🔗 Test the API: http://localhost:${PORT}/api/test`);
+  console.log("🔌 Socket.IO is enabled");
 });
