@@ -12,24 +12,20 @@ const ACTIVE_YARD_STATUSES = [
     "gate_out_requested",
     "gate_out_approved",
 ];
-const emptySizeCounts = () => ({ 20: 0, 40: 0, 45: 0, total: 0 });
+const emptySizeCounts = () => ({ 20: 0, 40: 0, total: 0 });
 const addContainer = (bucket, size) => {
-    const normalizedSize = [20, 40, 45].includes(Number(size)) ? Number(size) : 20;
+    const normalizedSize = [20, 40].includes(Number(size)) ? Number(size) : 20;
     bucket[normalizedSize] += 1;
     bucket.total += 1;
 };
 const getTeu = (size) => {
     if (Number(size) === 40)
         return 2;
-    if (Number(size) === 45)
-        return 2.25;
     return 1;
 };
 const getFeu = (size) => {
     if (Number(size) === 20)
         return 0.5;
-    if (Number(size) === 45)
-        return 1.125;
     return 1;
 };
 const buildDateQuery = (startDate, endDate) => {

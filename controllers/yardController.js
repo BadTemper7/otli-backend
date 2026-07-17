@@ -16,7 +16,7 @@ const toPositiveNumber = (value, fallback = 1) => {
 };
 const toContainerSize = (value, fallback = 20) => {
     const size = Number(value);
-    return [20, 40, 45].includes(size) ? size : fallback;
+    return [20, 40].includes(size) ? size : fallback;
 };
 const getCapacityUnit = (containerSize) => Number(containerSize) === 20 ? "TEU" : "FEU";
 const calculateCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {

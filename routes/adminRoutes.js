@@ -41,7 +41,6 @@ router.patch("/bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)
 router.patch("/bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
 router.patch("/bookings/:id/gate-in", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateIn));
 router.patch("/bookings/:id/store", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.markBookingStored));
-router.patch("/bookings/:id/billing-operation", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.updateBookingBillingOperation));
 router.post("/bookings/:id/additional-charges", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.addBookingAdditionalCharge));
 router.delete("/bookings/:id/additional-charges/:chargeId", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBookingAdditionalCharge));
 router.patch("/bookings/:id/relocate", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.relocateBooking));

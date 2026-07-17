@@ -34,7 +34,7 @@ const yardAreaSchema = new mongoose_1.default.Schema({
     },
     containerSize: {
         type: Number,
-        enum: [20, 40, 45],
+        enum: [20, 40],
         default: 20,
     },
     capacityTeu: {
@@ -68,7 +68,7 @@ yardAreaSchema.pre("validate", function () {
     this.lineCount = Math.max(Number(this.lineCount) || 1, 1);
     this.rowCount = Math.max(Number(this.rowCount) || 1, 1);
     this.tierCount = Math.max(Number(this.tierCount) || 1, 1);
-    this.containerSize = [20, 40, 45].includes(Number(this.containerSize)) ? Number(this.containerSize) : 20;
+    this.containerSize = [20, 40].includes(Number(this.containerSize)) ? Number(this.containerSize) : 20;
     const requestedCapacity = Math.max(Number(this.capacityTeu) || 1, 1);
     const rowTierBoxes = Math.max(this.rowCount * this.tierCount, 1);
     const requiredBays = Math.ceil(requestedCapacity / rowTierBoxes);

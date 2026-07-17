@@ -30,8 +30,6 @@ const toNumber = (value, fallback = 0) => {
 const getTeuFactor = (size) => {
     if (Number(size) === 40)
         return 2;
-    if (Number(size) === 45)
-        return 3;
     return 1;
 };
 const toPositive = (value, fallback = 1) => Math.max(toNumber(value, fallback), 1);
@@ -44,11 +42,9 @@ const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
     const yardSize = Number(yardContainerSize) || 20;
     if (yardSize === 20) {
         if (size === 40) return 2;
-        if (size === 45) return 2.25;
         return 1;
     }
     if (size === 20) return 0.5;
-    if (size === 45) return 1.125;
     return 1;
 };
 const ensureAreaLocationBlock = async (area) => {
@@ -58,7 +54,7 @@ const ensureAreaLocationBlock = async (area) => {
     const lineCount = toPositive(area.lineCount, 1);
     const rowCount = toPositive(area.rowCount, 1);
     const tierCount = toPositive(area.tierCount, 1);
-    const containerSize = [20, 40, 45].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20;
+    const containerSize = [20, 40].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20;
     const capacityTeu = area.capacityTeu || calculateAreaCapacityTeu({ lineCount, rowCount, tierCount, containerSize });
     return YardBlock_js_1.default.create({
         area: area._id,
@@ -273,6 +269,9 @@ const createClientPreAdvice = async (req, res) => {
     const requiredFields = [containerNumber, containerSize, containerType, containerStatus, shippingLine, arrivalDate];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required pre-advice fields." });
+    }
+    if (![20, 40].includes(Number(containerSize))) {
+        return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
     const missingDocuments = requiredDocumentFields.filter((fieldName) => !req.files?.[fieldName]?.[0]);

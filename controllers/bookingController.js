@@ -33,8 +33,6 @@ const toPositive = (value, fallback = 1) => Math.max(toNumber(value, fallback), 
 const getTeuFactor = (size) => {
     if (Number(size) === 40)
         return 2;
-    if (Number(size) === 45)
-        return 3;
     return 1;
 };
 const calculateAreaCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {
@@ -46,11 +44,9 @@ const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
     const yardSize = Number(yardContainerSize) || 20;
     if (yardSize === 20) {
         if (size === 40) return 2;
-        if (size === 45) return 2.25;
         return 1;
     }
     if (size === 20) return 0.5;
-    if (size === 45) return 1.125;
     return 1;
 };
 const getYardCapacityUnit = (yardContainerSize) => Number(yardContainerSize) === 20 ? "TEU" : "FEU";
@@ -61,7 +57,7 @@ const ensureAreaLocationBlock = async (area) => {
     const lineCount = toPositive(area.lineCount, 1);
     const rowCount = toPositive(area.rowCount, 1);
     const tierCount = toPositive(area.tierCount, 1);
-    const containerSize = [20, 40, 45].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20;
+    const containerSize = [20, 40].includes(Number(area.containerSize)) ? Number(area.containerSize) : 20;
     const capacityTeu = area.capacityTeu || calculateAreaCapacityTeu({ lineCount, rowCount, tierCount, containerSize });
     return YardBlock_js_1.default.create({
         area: area._id,
@@ -123,8 +119,8 @@ const buildPaymentReferenceNumber = async () => {
     return value;
 };
 const normalizeBillingRateKey = (value) => String(value || "all").trim().toLowerCase();
-const normalizeBookingServiceType = (value) => value === "stripping_stuffing_mano" ? "stripping_stuffing_mano" : "container_yard";
-const normalizeRateType = (value) => value === "international" ? "international" : "local";
+const normalizeBookingServiceType = () => "container_yard";
+const normalizeRateType = () => "local";
 const parseBookingDate = (value) => {
     if (!value)
         return null;
@@ -167,6 +163,9 @@ const validateBookingDateRange = ({ inDate, outDate, expectedArrivalDate }) => {
     if (hasOutDate && !parsedOut) {
         return { valid: false, message: "Please provide a valid Out Date." };
     }
+    if (parsedIn.getMinutes() !== 0 || parsedIn.getSeconds() !== 0 || parsedIn.getMilliseconds() !== 0) {
+        return { valid: false, message: "Scheduled Time In must use a whole-hour interval, such as 1:00 or 2:00." };
+    }
     if (parsedOut && parsedOut.getTime() <= parsedIn.getTime()) {
         return { valid: false, message: "Out Date must be later than In Date." };
     }
@@ -193,17 +192,14 @@ const rateMatchesBooking = (rate, booking) => {
     const rateSize = String(rate.containerSize || "all");
     const rateContainerType = normalizeBillingRateKey(rate.containerType);
     const rateLoad = normalizeBillingRateKey(rate.loadStatus);
-    const bookingRateType = normalizeRateType(booking.rateType);
-    const billingRateType = normalizeRateType(rate.rateType);
-    return billingRateType === bookingRateType
-        && (rateSize === "all" || rateSize === size)
+    return (rateSize === "all" || rateSize === size)
         && (rateContainerType === "all" || rateContainerType === type)
         && (rateLoad === "all" || rateLoad === loadStatus);
 };
 const getLatestRateByChargeCode = (rates = []) => {
     const map = new Map();
     for (const rate of rates) {
-        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
+        const key = String(rate.chargeCode || rate.description || rate._id);
         if (!map.has(key))
             map.set(key, rate);
     }
@@ -213,15 +209,14 @@ const shouldApplyBillingRate = (rate, booking) => {
     const scope = String(rate.billingScope || "base");
     if (scope === "display_only")
         return false;
-    if (scope === "optional_stripping_stuffing") {
-        return normalizeBookingServiceType(booking.serviceType) === "stripping_stuffing_mano";
-    }
+    if (scope === "optional_stripping_stuffing") return false;
     return true;
 };
 const computeBookingBilling = async (booking, { asOf = new Date(), persist = false } = {}) => {
     const effectiveDate = new Date(asOf);
     const activeRates = await BillingRate_js_1.default.find({
         status: "active",
+        rateType: normalizeRateType(booking.rateType),
         effectiveDate: { $lte: effectiveDate },
     }).sort({ sortOrder: 1, chargeCode: 1, effectiveDate: -1, createdAt: -1 });
     const matchedRates = getLatestRateByChargeCode(activeRates.filter((rate) => rateMatchesBooking(rate, booking) && shouldApplyBillingRate(rate, booking)));
@@ -707,6 +702,9 @@ const createClientBooking = async (req, res) => {
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields." });
     }
+    if (![20, 40].includes(Number(containerSize))) {
+        return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
+    }
     const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate });
     if (!dateRange.valid) {
         return res.status(400).json({ success: false, message: dateRange.message });
@@ -745,8 +743,8 @@ const createClientBooking = async (req, res) => {
         containerSize: Number(containerSize),
         containerType,
         containerLoadStatus: containerLoadStatus || "empty",
-        serviceType: normalizeBookingServiceType(serviceType),
-        rateType: normalizeRateType(rateType),
+        serviceType: "container_yard",
+        rateType: "local",
         shippingLine,
         truckPlateNumber: truckPlateNumber || "",
         driverName: driverName || "",
@@ -780,7 +778,6 @@ const createClientBooking = async (req, res) => {
     await notifyClient(booking, "Booking submitted for pre-advice review", "Your booking has been received and is now visible in the admin Pre-Advice module for verification.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Container Size", value: `${booking.containerSize}ft` },
-        { label: "Rate Type", value: normalizeRateType(booking.rateType) === "international" ? "International" : "Local" },
         { label: "In Date", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
     ]);
     await notifyAdmin(booking, "New booking pre-advice", "A client created a booking. It is ready for verification in the Pre-Advice module.", [
@@ -802,6 +799,9 @@ const resubmitClientBooking = async (req, res) => {
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." });
     }
+    if (![20, 40].includes(Number(containerSize))) {
+        return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
+    }
     const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate });
     if (!dateRange.valid) {
         return res.status(400).json({ success: false, message: dateRange.message });
@@ -820,8 +820,8 @@ const resubmitClientBooking = async (req, res) => {
     booking.containerSize = Number(containerSize);
     booking.containerType = containerType;
     booking.containerLoadStatus = containerLoadStatus || "empty";
-    booking.serviceType = normalizeBookingServiceType(serviceType);
-    booking.rateType = normalizeRateType(rateType ?? booking.rateType);
+    booking.serviceType = "container_yard";
+    booking.rateType = "local";
     booking.shippingLine = shippingLine;
     booking.truckPlateNumber = truckPlateNumber || "";
     booking.driverName = driverName || "";

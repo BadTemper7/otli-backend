@@ -10,6 +10,7 @@ const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
 };
+const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
 exports.OTLI_REFERENCE_RATES = [
     {
         rateType: "local",
@@ -143,7 +144,7 @@ const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", 
     const descriptionText = String(description).trim().toLowerCase();
     const unitText = String(unitLabel).trim().toLowerCase();
     const combined = `${descriptionText} ${unitText}`;
-    const sizeMatch = combined.match(/(?:^|\D)(20|40|45)(?:\D|$)/);
+    const sizeMatch = combined.match(/(?:^|\D)(20|40)(?:\D|$)/);
     let containerSize = sizeMatch?.[1] || currentRate?.containerSize || "all";
     const isLiftIn = /\blift\s*(in|on)\b/.test(descriptionText);
     const isLiftOut = /\blift\s*(out|off)\b/.test(descriptionText);
@@ -215,7 +216,7 @@ const buildRatePayload = (body = {}, currentRate = null) => {
     return normalizeRatePayload({
         description,
         chargeCode: currentRate?.chargeCode || body.chargeCode || toChargeCode(description, unitLabel),
-        rateType: body.rateType ?? currentRate?.rateType ?? "local",
+        rateType: normalizeRateType(body.rateType ?? currentRate?.rateType),
         unitLabel,
         ...rules,
         rateAmount: body.rateAmount ?? currentRate?.rateAmount ?? 0,
@@ -232,7 +233,7 @@ const safeRate = (rate) => {
         id: String(doc._id),
         description: doc.description,
         chargeCode: doc.chargeCode,
-        rateType: doc.rateType === "international" ? "international" : "local",
+        rateType: normalizeRateType(doc.rateType),
         category: doc.category || "container_yard_operation",
         billingScope: doc.billingScope || "base",
         unit: doc.unit,
@@ -254,7 +255,7 @@ const safeRate = (rate) => {
 const normalizeRatePayload = (body = {}) => ({
     description: String(body.description || "").trim(),
     chargeCode: String(body.chargeCode || body.description || "").trim(),
-    rateType: body.rateType === "international" ? "international" : "local",
+    rateType: normalizeRateType(body.rateType),
     category: body.category || "container_yard_operation",
     billingScope: body.billingScope || "base",
     unit: body.unit || (body.billingScope === "storage" ? "storage_day" : "per_container"),
@@ -277,12 +278,8 @@ const listBillingRates = async (req, res) => {
         query.status = status;
     if (category && category !== "all")
         query.category = category;
-    if (rateType && rateType !== "all") {
-        query.$and = query.$and || [];
-        query.$and.push(rateType === "local"
-            ? { $or: [{ rateType: "local" }, { rateType: { $exists: false } }] }
-            : { rateType: "international" });
-    }
+    if (rateType && rateType !== "all")
+        query.rateType = normalizeRateType(rateType);
     if (search) {
         const term = String(search).trim();
         query.$or = [
@@ -292,8 +289,14 @@ const listBillingRates = async (req, res) => {
             { notes: { $regex: term, $options: "i" } },
         ];
     }
+    query.billingScope = { $ne: "optional_stripping_stuffing" };
     const rates = await BillingRate_js_1.default.find(query).sort({ rateType: 1, category: 1, sortOrder: 1, status: 1, effectiveDate: -1, createdAt: -1 }).limit(300);
-    return res.json({ success: true, rates: rates.map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES });
+    const latestByCode = new Map();
+    for (const rate of rates) {
+        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
+        if (!latestByCode.has(key)) latestByCode.set(key, rate);
+    }
+    return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing") });
 };
 exports.listBillingRates = listBillingRates;
 const createBillingRate = async (req, res) => {
@@ -332,7 +335,7 @@ const seedReferenceBillingRates = async (req, res) => {
     const effectiveDate = req.body?.effectiveDate || new Date().toISOString().slice(0, 10);
     const mode = req.body?.mode || "upsert";
     const createdOrUpdated = [];
-    for (const template of exports.OTLI_REFERENCE_RATES) {
+    for (const template of exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing")) {
         const payload = normalizeRatePayload({
             ...template,
             effectiveDate,
@@ -342,12 +345,7 @@ const seedReferenceBillingRates = async (req, res) => {
             freeDays: 0,
             minimumAmount: 0,
         });
-        let rate = await BillingRate_js_1.default.findOne({
-            chargeCode: payload.chargeCode,
-            $or: payload.rateType === "local"
-                ? [{ rateType: "local" }, { rateType: { $exists: false } }]
-                : [{ rateType: payload.rateType }],
-        });
+        let rate = await BillingRate_js_1.default.findOne({ rateType: payload.rateType, chargeCode: payload.chargeCode });
         if (rate && mode === "skip_existing") {
             createdOrUpdated.push(rate);
             continue;
@@ -381,21 +379,17 @@ const deleteBillingRate = async (req, res) => {
 };
 exports.deleteBillingRate = deleteBillingRate;
 const listActiveBillingRates = async (req, res) => {
-    const requestedRateType = req.query.rateType === "international" ? "international" : req.query.rateType === "local" ? "local" : "";
     const query = {
         status: "active",
         effectiveDate: { $lte: new Date() },
     };
-    if (requestedRateType) {
-        query.$or = requestedRateType === "local"
-            ? [{ rateType: "local" }, { rateType: { $exists: false } }]
-            : [{ rateType: "international" }];
-    }
-    const rates = await BillingRate_js_1.default.find(query).sort({ rateType: 1, category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
+    if (req.query.rateType && req.query.rateType !== "all")
+        query.rateType = normalizeRateType(req.query.rateType);
+    query.billingScope = { $ne: "optional_stripping_stuffing" };
+    const rates = await BillingRate_js_1.default.find(query).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
     const latestByCode = new Map();
     for (const rate of rates) {
-        const rateType = rate.rateType === "international" ? "international" : "local";
-        const key = `${rateType}:${rate.chargeCode}`;
+        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
         if (!latestByCode.has(key))
             latestByCode.set(key, rate);
     }

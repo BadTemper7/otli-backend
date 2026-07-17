@@ -20,7 +20,7 @@ const preAdviceSchema = new mongoose_1.default.Schema({
     client: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     preAdviceNumber: { type: String, required: true, unique: true, index: true },
     containerNumber: { type: String, required: true, uppercase: true, trim: true, index: true },
-    containerSize: { type: Number, enum: [20, 40, 45], required: true },
+    containerSize: { type: Number, enum: [20, 40], required: true },
     containerType: {
         type: String,
         enum: ["dry", "reefer", "tank", "open_top", "flat_rack"],

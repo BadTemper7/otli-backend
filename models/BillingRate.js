@@ -27,7 +27,7 @@ const billingRateSchema = new mongoose_1.default.Schema({
         index: true,
     },
     unitLabel: { type: String, default: "", trim: true },
-    containerSize: { type: String, enum: ["all", "20", "40", "45"], default: "all", index: true },
+    containerSize: { type: String, enum: ["all", "20", "40"], default: "all", index: true },
     containerType: {
         type: String,
         enum: ["all", "dry", "reefer", "tank", "open_top", "flat_rack"],

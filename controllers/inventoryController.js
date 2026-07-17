@@ -18,11 +18,9 @@ const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
     const yardSize = Number(yardContainerSize) || 20;
     if (yardSize === 20) {
         if (size === 40) return 2;
-        if (size === 45) return 2.25;
         return 1;
     }
     if (size === 20) return 0.5;
-    if (size === 45) return 1.125;
     return 1;
 };
 const recalculateBlockOccupancy = async (blockId) => {

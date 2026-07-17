@@ -9,7 +9,7 @@ const inventoryContainerSchema = new mongoose_1.default.Schema({
     gateIn: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "GateInRecord", required: true, unique: true, index: true },
     client: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     containerNumber: { type: String, required: true, uppercase: true, trim: true, index: true },
-    containerSize: { type: Number, enum: [20, 40, 45], required: true },
+    containerSize: { type: Number, enum: [20, 40], required: true },
     containerType: { type: String, required: true },
     containerStatus: { type: String, required: true },
     shippingLine: { type: String, required: true },
