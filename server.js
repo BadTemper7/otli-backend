@@ -1,10 +1,14 @@
+require("./seed/seedSuperAdmin.js");
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const path = require("path");
-const { ensureDocumentsRoot, DOCUMENTS_ROOT } = require("./utils/localFileStorage.js");
+const {
+  ensureDocumentsRoot,
+  DOCUMENTS_ROOT,
+} = require("./utils/localFileStorage.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -241,7 +245,9 @@ app.get("/api/test", (req, res) => {
 const authRoutes = require("./routes/authRoutes.js").default;
 const adminRoutes = require("./routes/adminRoutes.js").default;
 const clientRoutes = require("./routes/clientRoutes.js").default;
-const { getPublicBookingByNumber } = require("./controllers/bookingController.js");
+const {
+  getPublicBookingByNumber,
+} = require("./controllers/bookingController.js");
 const asyncHandler = require("./utils/asyncHandler.js").default;
 
 app.use("/api/auth", authRoutes);
