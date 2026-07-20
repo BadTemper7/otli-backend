@@ -1471,12 +1471,17 @@ const submitBookingPayment = async (req, res) => {
     if (billingResult.total <= 0) {
         return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." });
     }
-    const paymentType = await PaymentType_js_1.default.findOne({ _id: req.body.paymentTypeId, status: "active" });
-    if (!paymentType) {
-        return res.status(400).json({ success: false, message: "Please select an available payment type." });
+    const requestedPaymentTypeId = String(req.body.paymentTypeId || "").trim();
+    if (!requestedPaymentTypeId) {
+        return res.status(400).json({ success: false, message: "Please select an available non-cash payment type." });
     }
-    if (paymentType.type === "cash") {
-        return res.status(400).json({ success: false, message: "Cash payments must be recorded by the authorized admin cashier." });
+    const paymentType = await PaymentType_js_1.default.findOne({
+        _id: requestedPaymentTypeId,
+        status: "active",
+        type: { $in: ["bank", "ewallet"] },
+    });
+    if (!paymentType) {
+        return res.status(400).json({ success: false, message: "Please select an available non-cash payment type." });
     }
     const clientPaymentReference = String(req.body.paymentReferenceNumber || "").trim();
     const paymentProofs = await uploadBookingPaymentDocuments({
@@ -1545,7 +1550,7 @@ const recordAdminCashPayment = async (req, res) => {
     }
     const cashQuery = { type: "cash", status: "active" };
     if (req.body.paymentTypeId) cashQuery._id = req.body.paymentTypeId;
-    const paymentType = await PaymentType_js_1.default.findOne(cashQuery).sort({ sortOrder: 1, createdAt: 1 });
+    const paymentType = await PaymentType_js_1.default.findOne(cashQuery).sort({ createdAt: 1 });
     if (!paymentType) {
         return res.status(400).json({ success: false, message: "No active Cash payment type is configured." });
     }

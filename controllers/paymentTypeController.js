@@ -7,10 +7,6 @@ exports.deletePaymentType = exports.updatePaymentType = exports.createPaymentTyp
 const PaymentType_js_1 = __importDefault(require("../models/PaymentType.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const socket_js_1 = require("../socket/socket.js");
-const toNumber = (value, fallback = 100) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-};
 const safePaymentType = (paymentType) => {
     const doc = paymentType?.toObject ? paymentType.toObject() : paymentType;
     if (!doc)
@@ -25,7 +21,6 @@ const safePaymentType = (paymentType) => {
         qrUrl: doc.qrSecureUrl || doc.qrUrl || "",
         instructions: doc.instructions || "",
         status: doc.status,
-        sortOrder: Number.isFinite(Number(doc.sortOrder)) ? Number(doc.sortOrder) : 100,
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
     };
@@ -33,7 +28,8 @@ const safePaymentType = (paymentType) => {
 exports.safePaymentType = safePaymentType;
 const ensureDefaultCashPaymentType = async () => {
     const existing = await PaymentType_js_1.default.findOne({ type: "cash", name: /^Cash$/i });
-    if (existing) return existing;
+    if (existing)
+        return existing;
     return PaymentType_js_1.default.create({
         type: "cash",
         name: "Cash",
@@ -42,11 +38,10 @@ const ensureDefaultCashPaymentType = async () => {
         accountName: "",
         instructions: "Pay cash at the authorized cashier and keep the official receipt.",
         status: "active",
-        sortOrder: 0,
     });
 };
 const normalizePayload = (body = {}) => ({
-    type: ["cash", "bank", "ewallet"].includes(body.type) ? body.type : "cash",
+    type: body.type === "ewallet" ? "ewallet" : "bank",
     name: String(body.name || "").trim(),
     bankName: String(body.bankName || "").trim(),
     accountNumber: String(body.accountNumber || "").trim(),
@@ -54,14 +49,15 @@ const normalizePayload = (body = {}) => ({
     qrUrl: String(body.qrUrl || "").trim(),
     instructions: String(body.instructions || "").trim(),
     status: body.status === "inactive" ? "inactive" : "active",
-    sortOrder: toNumber(body.sortOrder, 100),
 });
 const validatePayload = (payload) => {
+    if (!["bank", "ewallet"].includes(payload.type))
+        return "Only bank and eWallet payment types can be managed here.";
     if (!payload.name)
         return "Payment name is required.";
-    if (payload.type !== "cash" && !payload.accountNumber)
+    if (!payload.accountNumber)
         return "Account number is required.";
-    if (payload.type !== "cash" && !payload.accountName)
+    if (!payload.accountName)
         return "Account owner name is required.";
     if (payload.type === "bank" && !payload.bankName)
         return "Bank name is required for bank payment types.";
@@ -85,10 +81,10 @@ const uploadQr = async (file, paymentName) => {
 const listPaymentTypes = async (req, res) => {
     await ensureDefaultCashPaymentType();
     const { status, type, search } = req.query;
-    const query = {};
+    const query = { type: { $ne: "cash" } };
     if (status && status !== "all")
         query.status = status;
-    if (type && type !== "all")
+    if (["bank", "ewallet"].includes(type))
         query.type = type;
     if (search) {
         const term = String(search).trim();
@@ -99,7 +95,7 @@ const listPaymentTypes = async (req, res) => {
             { accountNumber: { $regex: term, $options: "i" } },
         ];
     }
-    const paymentTypes = await PaymentType_js_1.default.find(query).sort({ status: 1, sortOrder: 1, type: 1, name: 1 });
+    const paymentTypes = await PaymentType_js_1.default.find(query).sort({ status: 1, type: 1, name: 1 });
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listPaymentTypes = listPaymentTypes;
@@ -107,12 +103,15 @@ const listActivePaymentTypes = async (req, res) => {
     await ensureDefaultCashPaymentType();
     const paymentTypes = await PaymentType_js_1.default.find({
         status: "active",
-        type: { $ne: "cash" },
-    }).sort({ sortOrder: 1, type: 1, name: 1 });
+        type: { $in: ["bank", "ewallet"] },
+    }).sort({ type: 1, name: 1 });
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listActivePaymentTypes = listActivePaymentTypes;
 const createPaymentType = async (req, res) => {
+    if (String(req.body.type || "").trim().toLowerCase() === "cash") {
+        return res.status(400).json({ success: false, message: "Cash is created automatically and cannot be added in Payment Type setup." });
+    }
     const payload = normalizePayload(req.body);
     const validationError = validatePayload(payload);
     if (validationError)
@@ -128,6 +127,9 @@ const updatePaymentType = async (req, res) => {
     const paymentType = await PaymentType_js_1.default.findById(req.params.id);
     if (!paymentType)
         return res.status(404).json({ success: false, message: "Payment type not found." });
+    if (paymentType.type === "cash" || String(req.body.type || "").trim().toLowerCase() === "cash") {
+        return res.status(400).json({ success: false, message: "The automatic Cash payment type cannot be edited in Payment Type setup." });
+    }
     const payload = normalizePayload({ ...paymentType.toObject(), ...req.body });
     const validationError = validatePayload(payload);
     if (validationError)
@@ -148,6 +150,9 @@ const deletePaymentType = async (req, res) => {
     const paymentType = await PaymentType_js_1.default.findById(req.params.id);
     if (!paymentType)
         return res.status(404).json({ success: false, message: "Payment type not found." });
+    if (paymentType.type === "cash") {
+        return res.status(400).json({ success: false, message: "The automatic Cash payment type cannot be deleted." });
+    }
     const safe = (0, exports.safePaymentType)(paymentType);
     if (paymentType.qrPublicId)
         await (0, localFileStorage_js_1.deleteLocalFile)(paymentType.qrPublicId).catch(() => null);
