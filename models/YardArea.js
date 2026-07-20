@@ -47,6 +47,11 @@ const yardAreaSchema = new mongoose_1.default.Schema({
         default: "",
         trim: true,
     },
+    isCongestionArea: {
+        type: Boolean,
+        default: false,
+        index: true,
+    },
     status: {
         type: String,
         enum: ["active", "inactive", "maintenance"],

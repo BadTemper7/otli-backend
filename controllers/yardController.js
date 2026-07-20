@@ -18,6 +18,11 @@ const toContainerSize = (value, fallback = 20) => {
     const size = Number(value);
     return [20, 40].includes(size) ? size : fallback;
 };
+const toBoolean = (value, fallback = false) => {
+    if (value === undefined || value === null || value === "") return fallback;
+    if (typeof value === "boolean") return value;
+    return ["true", "1", "yes", "on"].includes(String(value).trim().toLowerCase());
+};
 const getCapacityUnit = (containerSize) => Number(containerSize) === 20 ? "TEU" : "FEU";
 const calculateCapacityTeu = ({ lineCount = 1, rowCount = 1, tierCount = 1 }) => {
     const capacity = toPositiveNumber(lineCount, 1) * toPositiveNumber(rowCount, 1) * toPositiveNumber(tierCount, 1);
@@ -67,6 +72,7 @@ const safeArea = (area, blockStats = null) => {
         boxCount: (Number(doc.lineCount) || 1) * (Number(doc.rowCount) || 1) * (Number(doc.tierCount) || 1),
         capacityTeu,
         description: doc.description || "",
+        isCongestionArea: Boolean(doc.isCongestionArea),
         status: doc.status,
         color: doc.color || "#0f766e",
         blockCount: blockStats?.blockCount ?? doc.blockCount ?? 0,
@@ -87,6 +93,7 @@ const safeBlock = (block) => {
         area: doc.area?._id ? String(doc.area._id) : String(doc.area),
         areaName: doc.area?.name || "",
         areaCode: doc.area?.code || "",
+        isCongestionArea: Boolean(doc.area?.isCongestionArea),
         name: doc.name,
         code: doc.code,
         blockType: doc.blockType,
@@ -136,7 +143,7 @@ const createDefaultBlockForArea = async (area) => {
         status: area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive",
         notes: "Internal location record created from the yard area for approval and slot tracking.",
     });
-    await block.populate("area", "name code");
+    await block.populate("area", "name code isCongestionArea");
     const payload = safeBlock(block);
     (0, socket_js_1.emitToAdmins)("inventory:block_created", payload);
     (0, socket_js_1.emitToAdmins)("yard:block_created", payload);
@@ -163,7 +170,7 @@ const syncDefaultBlockWithArea = async (area) => {
     block.teuSlots = area.capacityTeu ? toPositiveNumber(area.capacityTeu, computedCapacity) : computedCapacity;
     block.status = area.status === "active" ? "active" : area.status === "maintenance" ? "maintenance" : "inactive";
     await block.save();
-    await block.populate("area", "name code");
+    await block.populate("area", "name code isCongestionArea");
     const payload = safeBlock(block);
     (0, socket_js_1.emitToAdmins)("inventory:block_updated", payload);
     (0, socket_js_1.emitToAdmins)("yard:block_updated", payload);
@@ -237,11 +244,11 @@ const listApprovalYardBlocks = async (req, res) => {
     for (const area of areas) {
         await syncDefaultBlockWithArea(area);
         let areaLocation = await YardBlock_js_1.default.findOne({ area: area._id })
-            .populate("area", "name code")
+            .populate("area", "name code isCongestionArea")
             .sort({ code: 1, name: 1 });
         if (!areaLocation) {
             areaLocation = await createDefaultBlockForArea(area);
-            await areaLocation.populate("area", "name code");
+            await areaLocation.populate("area", "name code isCongestionArea");
         }
         areaLocations.push(areaLocation);
     }
@@ -254,7 +261,7 @@ const listApprovalYardBlocks = async (req, res) => {
 };
 exports.listApprovalYardBlocks = listApprovalYardBlocks;
 const createYardArea = async (req, res) => {
-    const { name, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color, code } = req.body;
+    const { name, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, isCongestionArea, status, color, code } = req.body;
     if (!name) {
         return res.status(400).json({ success: false, message: "Area name is required." });
     }
@@ -286,6 +293,7 @@ const createYardArea = async (req, res) => {
         containerSize: size,
         capacityTeu: dimensions.capacity,
         description,
+        isCongestionArea: toBoolean(isCongestionArea, false),
         status: status || "active",
         color: color || "#0f766e",
     });
@@ -300,7 +308,7 @@ const updateYardArea = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    const { name, code, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, status, color } = req.body;
+    const { name, code, lineCount, rowCount, tierCount, containerSize, capacityTeu, description, isCongestionArea, status, color } = req.body;
     if (code) {
         const normalizedCode = String(code).toUpperCase().trim();
         const exists = await YardArea_js_1.default.findOne({ code: normalizedCode, _id: { $ne: area._id } });
@@ -330,6 +338,7 @@ const updateYardArea = async (req, res) => {
     area.tierCount = dimensions.tierCount;
     area.capacityTeu = dimensions.capacity;
     area.description = description ?? area.description;
+    area.isCongestionArea = toBoolean(isCongestionArea, area.isCongestionArea);
     area.status = status ?? area.status;
     area.color = color ?? area.color;
     await area.save();
@@ -364,7 +373,7 @@ const listYardBlocks = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    let blocks = await YardBlock_js_1.default.find({ area: area._id }).populate("area", "name code").sort({ code: 1, name: 1 });
+    let blocks = await YardBlock_js_1.default.find({ area: area._id }).populate("area", "name code isCongestionArea").sort({ code: 1, name: 1 });
     if (blocks.length === 0) {
         const defaultBlock = await createDefaultBlockForArea(area);
         blocks = [defaultBlock];
@@ -417,7 +426,7 @@ const createYardBlock = async (req, res) => {
         status: status || "active",
         notes,
     });
-    await block.populate("area", "name code");
+    await block.populate("area", "name code isCongestionArea");
     const payload = safeBlock(block);
     (0, socket_js_1.emitToAdmins)("inventory:block_created", payload);
     (0, socket_js_1.emitToAdmins)("yard:block_created", payload);
@@ -471,7 +480,7 @@ const updateYardBlock = async (req, res) => {
     block.status = status ?? block.status;
     block.notes = notes ?? block.notes;
     await block.save();
-    await block.populate("area", "name code");
+    await block.populate("area", "name code isCongestionArea");
     const payload = safeBlock(block);
     (0, socket_js_1.emitToAdmins)("inventory:block_updated", payload);
     (0, socket_js_1.emitToAdmins)("yard:block_updated", payload);

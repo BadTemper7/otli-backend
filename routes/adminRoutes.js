@@ -34,6 +34,7 @@ router.get("/pre-advice-bookings/yard/areas", (0, authMiddleware_js_1.requirePer
 router.get("/pre-advice-bookings/yard/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listApprovalYardBlocks));
 router.get("/pre-advice-bookings/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));
 router.get("/pre-advice-bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
+router.get("/pre-advice-bookings/:id/congestion-surcharge", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingCongestionSurchargeOption));
 router.patch("/pre-advice-bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
 router.patch("/pre-advice-bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
 router.get("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBooking));

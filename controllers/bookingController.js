@@ -359,7 +359,7 @@ const addHistory = (booking, { status = booking.status, billingStatus = booking.
 const populateBooking = (query) => {
     return query
         .populate("client", "name email companyName phoneNumber")
-        .populate("assignedArea", "name code")
+        .populate("assignedArea", "name code isCongestionArea")
         .populate("assignedBlock", "name code teuSlots occupiedSlots bayCount rowCount tierCount containerSize");
 };
 const safeBooking = (booking) => {
@@ -398,6 +398,7 @@ const safeBooking = (booking) => {
         assignedArea: area?._id ? String(area._id) : doc.assignedArea ? String(doc.assignedArea) : "",
         assignedAreaName: area?.name || "",
         assignedAreaCode: area?.code || "",
+        assignedAreaIsCongestion: Boolean(area?.isCongestionArea),
         assignedBlock: block?._id ? String(block._id) : doc.assignedBlock ? String(doc.assignedBlock) : "",
         assignedBlockName: block?.name || "",
         assignedBlockCode: block?.code || "",
@@ -575,29 +576,68 @@ const recalculateBlockOccupancy = async (blockId) => {
         occupiedSlots: Math.round(occupied * 100) / 100,
     });
 };
-const getYardSpaceAvailability = async (containerSize) => {
-    const blocks = await YardBlock_js_1.default.find({ status: "active" }).select("containerSize teuSlots status");
-    if (blocks.length === 0) return { hasAvailableSpace: false, availableCapacity: 0 };
+const getYardSpaceAvailability = async (containerSize, { areaType = "regular", excludeBookingId = null } = {}) => {
+    const blocks = await YardBlock_js_1.default.find({ status: "active" })
+        .select("containerSize teuSlots status area")
+        .populate("area", "name code status isCongestionArea");
+    const eligibleBlocks = blocks.filter((block) => {
+        if (!block.area || block.area.status !== "active") return false;
+        const isCongestionArea = Boolean(block.area.isCongestionArea);
+        if (areaType === "congestion") return isCongestionArea;
+        if (areaType === "all") return true;
+        return !isCongestionArea;
+    });
+    if (eligibleBlocks.length === 0) {
+        return { hasAvailableSpace: false, availableCapacity: 0, blockCount: 0 };
+    }
     let availableCapacity = 0;
-    for (const block of blocks) {
+    let hasAvailableSpace = false;
+    for (const block of eligibleBlocks) {
+        const bookingFilter = activeBookingFilterForBlock(block._id);
+        if (excludeBookingId) bookingFilter._id = { $ne: excludeBookingId };
         const [inventoryContainers, bookingContainers] = await Promise.all([
             InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize"),
-            Booking_js_1.default.find(activeBookingFilterForBlock(block._id)).select("containerSize"),
+            Booking_js_1.default.find(bookingFilter).select("containerSize"),
         ]);
         const usedCapacity = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
         const requiredCapacity = getYardCapacityUsage(containerSize, block.containerSize);
         const remaining = Math.max(Number(block.teuSlots) - usedCapacity, 0);
         availableCapacity += remaining;
-        if (remaining >= requiredCapacity) {
-            return { hasAvailableSpace: true, availableCapacity: Math.round(availableCapacity * 100) / 100 };
-        }
+        if (remaining >= requiredCapacity) hasAvailableSpace = true;
     }
-    return { hasAvailableSpace: false, availableCapacity: Math.round(availableCapacity * 100) / 100 };
+    return {
+        hasAvailableSpace,
+        availableCapacity: Math.round(availableCapacity * 100) / 100,
+        blockCount: eligibleBlocks.length,
+    };
 };
-const resolveCongestionSurchargeOption = async (booking) => {
-    const yard = await getYardSpaceAvailability(booking.containerSize);
-    if (yard.hasAvailableSpace) {
-        return { available: false, reason: "Yard space is still available.", yard };
+const resolveCongestionSurchargeOption = async (booking, { requireCongestionSpace = true } = {}) => {
+    const regularYard = await getYardSpaceAvailability(booking.containerSize, {
+        areaType: "regular",
+        excludeBookingId: booking._id,
+    });
+    if (regularYard.hasAvailableSpace) {
+        return { available: false, reason: "Regular yard space is still available.", regularYard };
+    }
+    const congestionYard = await getYardSpaceAvailability(booking.containerSize, {
+        areaType: "congestion",
+        excludeBookingId: booking._id,
+    });
+    if (congestionYard.blockCount === 0) {
+        return {
+            available: false,
+            reason: "Create and activate a designated congestion yard area before applying the surcharge.",
+            regularYard,
+            congestionYard,
+        };
+    }
+    if (requireCongestionSpace && !congestionYard.hasAvailableSpace) {
+        return {
+            available: false,
+            reason: "The designated congestion yard area has no available space.",
+            regularYard,
+            congestionYard,
+        };
     }
     const rate = await BillingRate_js_1.default.findOne({
         status: "active",
@@ -611,12 +651,18 @@ const resolveCongestionSurchargeOption = async (booking) => {
         ],
     }).sort({ effectiveDate: -1, createdAt: -1 });
     if (!rate) {
-        return { available: false, reason: `No active ${booking.containerSize}ft congestion surcharge is configured.`, yard };
+        return {
+            available: false,
+            reason: `No active ${booking.containerSize}ft congestion surcharge is configured.`,
+            regularYard,
+            congestionYard,
+        };
     }
     return {
         available: true,
-        reason: "The yard has no available space.",
-        yard,
+        reason: "Regular yard space is unavailable. Assign the container to a designated congestion area.",
+        regularYard,
+        congestionYard,
         rate: {
             id: String(rate._id),
             chargeCode: rate.chargeCode,
@@ -714,7 +760,7 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
 };
 const getSlotKey = (bay, row, tier) => `${bay}-${row}-${tier}`;
 const getYardBlockSlots = async (req, res) => {
-    const block = await YardBlock_js_1.default.findById(req.params.blockId).populate("area", "name code");
+    const block = await YardBlock_js_1.default.findById(req.params.blockId).populate("area", "name code isCongestionArea");
     if (!block) {
         return res.status(404).json({ success: false, message: "Yard block not found." });
     }
@@ -761,6 +807,7 @@ const getYardBlockSlots = async (req, res) => {
             id: String(block._id),
             area: block.area?._id ? String(block.area._id) : String(block.area),
             areaName: block.area?.name || "",
+            isCongestionArea: Boolean(block.area?.isCongestionArea),
             name: block.name,
             code: block.code,
             bayCount: Number(block.bayCount) || 1,
@@ -1051,11 +1098,51 @@ const approveBooking = async (req, res) => {
     booking.assignedAt = new Date();
     booking.assignedBy = req.user._id;
     booking.storageStartDate = booking.storageStartDate || booking.inDate || booking.expectedArrivalDate || booking.approvedAt;
+    const assignedToCongestionArea = Boolean(plan.area.isCongestionArea);
+    let congestionOption = null;
+    if (assignedToCongestionArea) {
+        congestionOption = await resolveCongestionSurchargeOption(booking, { requireCongestionSpace: false });
+        if (!congestionOption.available || !congestionOption.rate) {
+            return res.status(400).json({
+                success: false,
+                message: congestionOption.reason || "Congestion surcharge is not available for this booking.",
+            });
+        }
+        const existingCongestionCharge = (booking.additionalBillingCharges || []).find((item) => item.source === "congestion_surcharge");
+        if (existingCongestionCharge) {
+            existingCongestionCharge.rate = congestionOption.rate.id;
+            existingCongestionCharge.chargeCode = congestionOption.rate.chargeCode;
+            existingCongestionCharge.description = congestionOption.rate.description || "Congestion Surcharge";
+            existingCongestionCharge.quantity = 1;
+            existingCongestionCharge.rateAmount = congestionOption.rate.rateAmount;
+            existingCongestionCharge.amount = congestionOption.rate.rateAmount;
+            existingCongestionCharge.notes = "Automatically applied during pre-advice assignment to the designated congestion area.";
+            existingCongestionCharge.addedBy = req.user._id;
+            existingCongestionCharge.addedAt = new Date();
+        }
+        else {
+            booking.additionalBillingCharges.push({
+                rate: congestionOption.rate.id,
+                chargeCode: congestionOption.rate.chargeCode,
+                source: "congestion_surcharge",
+                description: congestionOption.rate.description || "Congestion Surcharge",
+                quantity: 1,
+                rateAmount: congestionOption.rate.rateAmount,
+                amount: congestionOption.rate.rateAmount,
+                notes: "Automatically applied during pre-advice assignment to the designated congestion area.",
+                addedBy: req.user._id,
+                addedAt: new Date(),
+            });
+        }
+    }
+    else {
+        booking.additionalBillingCharges = (booking.additionalBillingCharges || []).filter((item) => item.source !== "congestion_surcharge");
+    }
     const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
     addHistory(booking, {
         remarks: billingResult.hasMatchedRates
-            ? `Booking approved, yard area assigned, and initial Lift On, Lift Off, and storage billing added at PHP ${billingResult.total.toLocaleString()}. Storage charges refresh daily.`
-            : "Booking approved and yard area assigned. Billing will appear when matching active rates are configured.",
+            ? `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area with the congestion surcharge applied" : "a regular yard area"}. Initial billing is PHP ${billingResult.total.toLocaleString()}. Storage charges refresh daily.`
+            : `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. Billing will appear when matching active rates are configured.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1063,7 +1150,7 @@ const approveBooking = async (req, res) => {
     if (previousBlockId && previousBlockId !== String(plan.block._id))
         await recalculateBlockOccupancy(previousBlockId);
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code teuSlots occupiedSlots bayCount rowCount tierCount containerSize");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:approved", payload);
@@ -1109,6 +1196,7 @@ const rejectBooking = async (req, res) => {
     booking.assignedBy = null;
     booking.approvedAt = null;
     booking.approvedBy = null;
+    booking.additionalBillingCharges = (booking.additionalBillingCharges || []).filter((item) => item.source !== "congestion_surcharge");
     addHistory(booking, { remarks: `Booking rejected: ${reason}. Yard slot released.`, changedBy: req.user._id });
     await booking.save();
     if (previousBlockId)
@@ -1155,7 +1243,7 @@ const approveBookingGateIn = async (req, res) => {
     addHistory(booking, { remarks: "Gate-In approved after inspection.", changedBy: req.user._id });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_in_approved", payload);
@@ -1190,7 +1278,7 @@ const markBookingStored = async (req, res) => {
     await booking.save();
     await recalculateBlockOccupancy(booking.assignedBlock);
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:stored", payload);
@@ -1227,7 +1315,7 @@ const updateBookingBillingOperation = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:billing_operation_updated", payload);
@@ -1248,7 +1336,11 @@ const addBookingCongestionSurcharge = async (req, res) => {
     if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
         return res.status(400).json({ success: false, message: "Congestion Surcharge can only be added before payment is submitted or after a rejected payment." });
     }
-    const option = await resolveCongestionSurchargeOption(booking);
+    await booking.populate("assignedArea", "name code isCongestionArea");
+    if (!booking.assignedArea?.isCongestionArea) {
+        return res.status(400).json({ success: false, message: "Congestion surcharge is applied during pre-advice assignment to a designated congestion area." });
+    }
+    const option = await resolveCongestionSurchargeOption(booking, { requireCongestionSpace: false });
     if (!option.available || !option.rate) {
         return res.status(400).json({ success: false, message: option.reason || "Congestion Surcharge is not available." });
     }
@@ -1264,7 +1356,7 @@ const addBookingCongestionSurcharge = async (req, res) => {
         quantity: 1,
         rateAmount: option.rate.rateAmount,
         amount: option.rate.rateAmount,
-        notes: "Manually added because the yard had no available space.",
+        notes: "Applied because the container is assigned to the designated congestion area.",
         addedBy: req.user._id,
         addedAt: new Date(),
     });
@@ -1278,7 +1370,7 @@ const addBookingCongestionSurcharge = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:congestion_surcharge_added", payload);
@@ -1322,7 +1414,7 @@ const addBookingAdditionalCharge = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:additional_charge_added", payload);
@@ -1340,6 +1432,12 @@ const deleteBookingAdditionalCharge = async (req, res) => {
     const charge = booking.additionalBillingCharges.id(req.params.chargeId);
     if (!charge)
         return res.status(404).json({ success: false, message: "Additional charge not found." });
+    if (charge.source === "congestion_surcharge") {
+        return res.status(400).json({
+            success: false,
+            message: "The congestion surcharge is controlled by the Pre-Advice yard assignment. Reassign the booking to a regular yard area to remove it.",
+        });
+    }
     const description = charge.description;
     charge.deleteOne();
     const billingResult = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status) ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
@@ -1351,7 +1449,7 @@ const deleteBookingAdditionalCharge = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:additional_charge_deleted", payload);
@@ -1380,13 +1478,17 @@ const submitBookingPayment = async (req, res) => {
     if (paymentType.type === "cash") {
         return res.status(400).json({ success: false, message: "Cash payments must be recorded by the authorized admin cashier." });
     }
+    const clientPaymentReference = String(req.body.paymentReferenceNumber || "").trim();
     const paymentProofs = await uploadBookingPaymentDocuments({
         files: req.files,
         bookingReference: booking.bookingReference,
         clientId: req.user._id,
     });
-    if (paymentProofs.length === 0) {
-        return res.status(400).json({ success: false, message: "Please upload at least one payment proof." });
+    if (!clientPaymentReference && paymentProofs.length === 0) {
+        return res.status(400).json({
+            success: false,
+            message: "Enter the payment reference number or upload proof of payment.",
+        });
     }
     booking.paymentAmount = billingResult.total;
     booking.paymentType = paymentType._id;
@@ -1398,7 +1500,7 @@ const submitBookingPayment = async (req, res) => {
         accountName: paymentType.accountName,
         qrUrl: paymentType.qrSecureUrl || paymentType.qrUrl || "",
     };
-    booking.paymentReferenceNumber = String(booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim();
+    booking.paymentReferenceNumber = String(clientPaymentReference || booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim();
     booking.paymentDate = req.body.paymentDate || new Date();
     booking.paymentRemarks = req.body.paymentRemarks || "";
     booking.paymentProofs = [...booking.paymentProofs, ...paymentProofs];
@@ -1407,21 +1509,21 @@ const submitBookingPayment = async (req, res) => {
     booking.billingStatus = "payment_under_review";
     addHistory(booking, {
         billingStatus: "payment_under_review",
-        remarks: `Payment proof submitted by client. Billing was auto-computed from rate setup at PHP ${billingResult.total.toLocaleString()}.`,
+        remarks: `${paymentProofs.length > 0 ? "Payment proof" : "Payment reference"} submitted by client. Billing was auto-computed from rate setup at PHP ${billingResult.total.toLocaleString()}.`,
         changedBy: req.user._id,
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:payment_submitted", payload);
     (0, socket_js_1.emitToUser)(req.user._id, "booking:payment_submitted", payload);
-    await notifyClient(booking, "Payment submitted", "Your payment proof was submitted and is now under admin review.", [
+    await notifyClient(booking, "Payment submitted", `Your ${paymentProofs.length > 0 ? "payment proof" : "payment reference"} was submitted and is now under admin review.`, [
         { label: "Reference Number", value: booking.paymentReferenceNumber },
         { label: "Amount", value: `PHP ${booking.paymentAmount.toLocaleString()}` },
     ]);
-    await notifyAdmin(booking, "Payment submitted for review", "A client uploaded payment proof for review.", [
+    await notifyAdmin(booking, "Payment submitted for review", `A client submitted ${paymentProofs.length > 0 ? "payment proof" : "a payment reference"} for review.`, [
         { label: "Client", value: getClientDisplayName(booking.client) },
         { label: "Reference Number", value: booking.paymentReferenceNumber },
     ]);
@@ -1478,7 +1580,7 @@ const recordAdminCashPayment = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:cash_payment_recorded", payload);
@@ -1504,7 +1606,7 @@ const approveBookingPayment = async (req, res) => {
     addHistory(booking, { billingStatus: "paid_approved", remarks: req.body.remarks || "Payment approved by admin.", changedBy: req.user._id });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:payment_approved", payload);
@@ -1519,7 +1621,7 @@ const rejectBookingPayment = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
         return res.status(404).json({ success: false, message: "Booking not found." });
-    const reason = req.body.reason || "Payment proof was rejected by admin.";
+    const reason = req.body.reason || "Payment details were rejected by admin.";
     booking.billingStatus = "payment_rejected";
     booking.paymentReviewedAt = new Date();
     booking.paymentReviewedBy = req.user._id;
@@ -1527,12 +1629,12 @@ const rejectBookingPayment = async (req, res) => {
     addHistory(booking, { billingStatus: "payment_rejected", remarks: `Payment rejected: ${reason}`, changedBy: req.user._id });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:payment_rejected", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:payment_rejected", payload);
-    await notifyClient(booking, "Payment rejected", "Your payment proof was rejected. Please upload corrected payment details.", [
+    await notifyClient(booking, "Payment rejected", "Your payment details were rejected. Please submit a corrected reference number or proof of payment.", [
         { label: "Reason", value: reason },
     ]);
     return res.json({ success: true, message: "Payment rejected.", booking: payload });
@@ -1569,7 +1671,7 @@ const requestBookingGateOut = async (req, res) => {
     });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_out_requested", payload);
@@ -1604,7 +1706,7 @@ const approveBookingGateOut = async (req, res) => {
     addHistory(booking, { remarks: "Gate-out approved by admin.", changedBy: req.user._id });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_out_approved", payload);
@@ -1637,7 +1739,7 @@ const completeBookingGateOut = async (req, res) => {
     if (previousBlockId)
         await recalculateBlockOccupancy(previousBlockId);
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:completed", payload);
@@ -1698,7 +1800,7 @@ const relocateBooking = async (req, res) => {
     if (previousBlockId && previousBlockId !== String(plan.block._id))
         await recalculateBlockOccupancy(previousBlockId);
     await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code teuSlots occupiedSlots bayCount rowCount tierCount containerSize");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:relocated", payload);

@@ -105,7 +105,10 @@ const listPaymentTypes = async (req, res) => {
 exports.listPaymentTypes = listPaymentTypes;
 const listActivePaymentTypes = async (req, res) => {
     await ensureDefaultCashPaymentType();
-    const paymentTypes = await PaymentType_js_1.default.find({ status: "active" }).sort({ sortOrder: 1, type: 1, name: 1 });
+    const paymentTypes = await PaymentType_js_1.default.find({
+        status: "active",
+        type: { $ne: "cash" },
+    }).sort({ sortOrder: 1, type: 1, name: 1 });
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listActivePaymentTypes = listActivePaymentTypes;
