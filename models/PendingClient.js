@@ -32,6 +32,7 @@ const pendingClientSchema = new mongoose_1.default.Schema({
     companyAddress: { type: String, required: true, trim: true },
     companyType: { type: String, required: true, trim: true },
     companyTypeOther: { type: String, default: "" },
+    companyMarket: { type: String, enum: ["local", "international"], required: true, default: "local", index: true },
     phoneNumber: { type: String, required: true, trim: true },
     representativeFirstName: { type: String, required: true, trim: true },
     representativeMiddleName: { type: String, default: "" },

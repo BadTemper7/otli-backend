@@ -1,299 +1,125 @@
-require("./seed/seedSuperAdmin.js");
-require("dotenv").config();
-const express = require("express");
-const http = require("http");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const path = require("path");
-const {
-  ensureDocumentsRoot,
-  DOCUMENTS_ROOT,
-} = require("./utils/localFileStorage.js");
+import "dotenv/config";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
+import cookieParser from "cookie-parser";
+import mongoose from "mongoose";
+
+const require = createRequire(import.meta.url);
+const { connectDB } = require("./config/db.js");
+const { ensureDocumentsRoot, DOCUMENTS_ROOT } = require("./utils/localFileStorage.js");
+const { initSocket } = require("./socket/socket.js");
+const { notFound, errorHandler } = require("./middleware/errorHandler.js");
+const authRoutesModule = require("./routes/authRoutes.js");
+const adminRoutesModule = require("./routes/adminRoutes.js");
+const clientRoutesModule = require("./routes/clientRoutes.js");
+
+const authRoutes = authRoutesModule.default || authRoutesModule;
+const adminRoutes = adminRoutesModule.default || adminRoutesModule;
+const clientRoutes = clientRoutesModule.default || clientRoutesModule;
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const httpServer = createServer(app);
+const PORT = Number(process.env.PORT || 5000);
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const allowedOrigins = [
+  process.env.CLIENT_PUBLIC_URL,
+  process.env.ADMIN_PUBLIC_URL,
+  ...(process.env.CLIENT_ORIGINS || "").split(","),
+  ...(process.env.ADMIN_ORIGINS || "").split(","),
+  ...(process.env.CORS_ORIGINS || "").split(","),
+]
+  .map((origin) => String(origin || "").trim().replace(/\/$/, ""))
+  .filter(Boolean);
 
-// Local document storage. Client folders are created automatically on upload.
-ensureDocumentsRoot().catch((error) => {
-  console.error("❌ Unable to initialize documents directory:", error.message);
-});
-app.use(
-  "/documents",
-  express.static(DOCUMENTS_ROOT, {
-    dotfiles: "deny",
-    index: false,
-    fallthrough: true,
-    maxAge: 0,
-    setHeaders: (res) => {
-      res.setHeader("Cache-Control", "private, no-store, max-age=0");
-      res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-    },
-  }),
-);
+const isAllowedOrigin = (origin) => {
+  if (!origin || allowedOrigins.length === 0) return true;
+  return allowedOrigins.includes(String(origin).replace(/\/$/, ""));
+};
 
-// MongoDB Connection
-const MONGODB_URI =
-  process.env.MONGODB_URI || "mongodb://localhost:27017/testdb";
-
-mongoose
-  .connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
-    console.log("✅ Connected to MongoDB successfully!");
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1);
-  });
-
-// ==================== MODELS ====================
-
-// User Schema
-const userSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true,
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(cors({
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error("Origin is not allowed by CORS."));
   },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-    lowercase: true,
-    trim: true,
-  },
-  age: {
-    type: Number,
-    min: 0,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-});
+  credentials: true,
+}));
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+app.use(cookieParser());
+if (process.env.NODE_ENV !== "test") app.use(morgan("combined"));
 
-const User = mongoose.model("TestUser", userSchema);
+await ensureDocumentsRoot();
+app.use("/documents", express.static(DOCUMENTS_ROOT, {
+  dotfiles: "deny",
+  index: false,
+  fallthrough: true,
+  maxAge: 0,
+  setHeaders(res) {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+  },
+}));
 
-// ==================== ROUTES ====================
-
-// Health Check (Important for Hostinger)
 app.get("/", (req, res) => {
   res.json({
-    status: "OK",
-    message: "🚀 Server is running successfully!",
+    success: true,
+    message: "OneTrue API is running.",
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || "development",
   });
 });
 
-// Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-    mongodb:
-      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+  const connected = mongoose.connection.readyState === 1;
+  res.status(connected ? 200 : 503).json({
+    success: connected,
+    status: connected ? "healthy" : "degraded",
+    mongodb: connected ? "connected" : "disconnected",
     uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
   });
 });
-
-// ===== User Routes =====
-
-// Create a new user
-app.post("/api/users", async (req, res) => {
-  try {
-    const { name, email, age } = req.body;
-
-    // Validation
-    if (!name || !email) {
-      return res.status(400).json({
-        error: "Name and email are required",
-      });
-    }
-
-    const user = new User({ name, email, age });
-    await user.save();
-
-    res.status(201).json({
-      success: true,
-      message: "User created successfully",
-      user,
-    });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({
-        error: "Email already exists",
-      });
-    }
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Get all users
-app.get("/api/users", async (req, res) => {
-  try {
-    const users = await User.find().sort({ createdAt: -1 });
-    res.json({
-      success: true,
-      count: users.length,
-      users,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Get a single user by ID
-app.get("/api/users/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-    res.json({
-      success: true,
-      user,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Update a user
-app.put("/api/users/:id", async (req, res) => {
-  try {
-    const { name, email, age } = req.body;
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { name, email, age },
-      { new: true, runValidators: true },
-    );
-
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "User updated successfully",
-      user,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Delete a user
-app.delete("/api/users/:id", async (req, res) => {
-  try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-    res.json({
-      success: true,
-      message: "User deleted successfully",
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// ===== Test Route =====
-app.get("/api/test", (req, res) => {
-  res.json({
-    message: "API is working!",
-    endpoints: [
-      { method: "GET", path: "/" },
-      { method: "GET", path: "/health" },
-      { method: "GET", path: "/api/users" },
-      { method: "POST", path: "/api/users" },
-      { method: "GET", path: "/api/users/:id" },
-      { method: "PUT", path: "/api/users/:id" },
-      { method: "DELETE", path: "/api/users/:id" },
-      { method: "GET", path: "/api/test" },
-    ],
-  });
-});
-
-// ==================== ONETRUE BACKEND ====================
-// OneTrue folders are kept directly in the project root.
-// The OneTrue API and Socket.IO share the same HTTP server.
-const authRoutes = require("./routes/authRoutes.js").default;
-const adminRoutes = require("./routes/adminRoutes.js").default;
-const clientRoutes = require("./routes/clientRoutes.js").default;
-const {
-  getPublicBookingByNumber,
-} = require("./controllers/bookingController.js");
-const asyncHandler = require("./utils/asyncHandler.js").default;
 
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/client", clientRoutes);
+app.use(notFound);
+app.use(errorHandler);
 
-app.get(
-  "/api/bookings/status/:bookingNumber",
-  asyncHandler(getPublicBookingByNumber),
-);
-app.get(
-  "/api/public/bookings/:bookingNumber",
-  asyncHandler(getPublicBookingByNumber),
-);
+initSocket(httpServer, allowedOrigins);
 
-// 404 Handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Route not found",
+const startServer = async () => {
+  await connectDB();
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`OneTrue API listening on port ${PORT}`);
   });
+};
+
+startServer().catch((error) => {
+  console.error("Unable to start OneTrue API:", error.message);
+  process.exit(1);
 });
 
-// Error Handler
-app.use((err, req, res, next) => {
-  console.error("Error:", err.stack);
-  res.status(500).json({
-    error: "Something went wrong!",
-    message: err.message,
+const shutdown = async (signal) => {
+  console.log(`${signal} received. Closing server...`);
+  httpServer.close(async () => {
+    await mongoose.connection.close().catch(() => null);
+    process.exit(0);
   });
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection:", error);
 });
-
-// Start HTTP and Socket.IO server
-const { initSocket } = require("./socket/socket.js");
-const httpServer = http.createServer(app);
-const socketAllowedOrigins = String(
-  process.env.SOCKET_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "",
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-initSocket(httpServer, socketAllowedOrigins);
-
-httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`🔗 Test the API: http://localhost:${PORT}/api/test`);
-  console.log("🔌 Socket.IO is enabled");
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
 });

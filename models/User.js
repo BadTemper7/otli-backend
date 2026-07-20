@@ -44,6 +44,7 @@ const userSchema = new mongoose_1.default.Schema({
     companyAddress: { type: String, default: "" },
     companyType: { type: String, default: "" },
     companyTypeOther: { type: String, default: "" },
+    companyMarket: { type: String, enum: ["local", "international"], default: "local", index: true },
     phoneNumber: { type: String, default: "" },
     representativeFirstName: { type: String, default: "" },
     representativeMiddleName: { type: String, default: "" },

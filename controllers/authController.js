@@ -67,6 +67,7 @@ const safeUser = (user) => {
         companyAddress: user.companyAddress,
         companyType: user.companyType,
         companyTypeOther: user.companyTypeOther,
+        companyMarket: user.companyMarket === "international" ? "international" : "local",
         phoneNumber: user.phoneNumber,
         representativeFirstName: user.representativeFirstName,
         representativeMiddleName: user.representativeMiddleName,
@@ -157,11 +158,12 @@ const me = async (req, res) => {
 };
 exports.me = me;
 const requestClientRegistrationOtp = async (req, res) => {
-    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
+    const { companyName, companyAddress, companyType, companyTypeOther, companyMarket, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
     const requiredFields = [
         companyName,
         companyAddress,
         companyType,
+        companyMarket,
         phoneNumber,
         representativeFirstName,
         representativeLastName,
@@ -172,6 +174,10 @@ const requestClientRegistrationOtp = async (req, res) => {
     ];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required fields." });
+    }
+    const normalizedCompanyMarket = String(companyMarket || "").trim().toLowerCase();
+    if (!["local", "international"].includes(normalizedCompanyMarket)) {
+        return res.status(400).json({ success: false, message: "Please select if the company is Local or International." });
     }
     if (password !== confirmPassword) {
         return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
@@ -215,6 +221,7 @@ const requestClientRegistrationOtp = async (req, res) => {
         companyAddress,
         companyType,
         companyTypeOther: companyTypeOther || "",
+        companyMarket: normalizedCompanyMarket,
         phoneNumber,
         representativeFirstName,
         representativeMiddleName: representativeMiddleName || "",
@@ -331,6 +338,7 @@ const verifyClientRegistrationOtp = async (req, res) => {
         companyAddress: pending.companyAddress,
         companyType: pending.companyType,
         companyTypeOther: pending.companyTypeOther,
+        companyMarket: pending.companyMarket === "international" ? "international" : "local",
         phoneNumber: pending.phoneNumber,
         representativeFirstName: pending.representativeFirstName,
         representativeMiddleName: pending.representativeMiddleName,

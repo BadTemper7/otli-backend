@@ -13,112 +13,64 @@ const toNumber = (value, fallback = 0) => {
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
 exports.OTLI_REFERENCE_RATES = [
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "base",
-        description: "Lift On Charge",
-        chargeCode: "LIFT_ON_20",
-        unit: "per_teu",
-        containerSize: "all",
-        rateAmount: 500,
-        sortOrder: 10,
-        notes: "Reference: PHP 500 per 20 ft equivalent. A 40ft container is charged x2.",
+        rateType: "local", category: "container_yard_operation", billingScope: "base",
+        description: "Lift On", chargeCode: "LIFT_ON_20", unit: "per_container", containerSize: "20",
+        rateAmount: 500, sortOrder: 10, notes: "Applied only to 20ft containers.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "base",
-        description: "Lift Off Charge",
-        chargeCode: "LIFT_OFF_20",
-        unit: "per_teu",
-        containerSize: "all",
-        rateAmount: 500,
-        sortOrder: 20,
-        notes: "Reference: PHP 500 per 20 ft equivalent. A 40ft container is charged x2.",
+        rateType: "local", category: "container_yard_operation", billingScope: "base",
+        description: "Lift On", chargeCode: "LIFT_ON_40", unit: "per_container", containerSize: "40",
+        rateAmount: 1000, sortOrder: 11, notes: "Applied only to 40ft containers.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "display_only",
-        description: "Total Handling per Container Cycle",
-        chargeCode: "TOTAL_HANDLING_CYCLE_20",
-        unit: "per_container",
-        containerSize: "20",
-        rateAmount: 1000,
-        sortOrder: 30,
-        notes: "Display reference only. This is the total of Lift On and Lift Off, so it is not added again to billing.",
+        rateType: "local", category: "container_yard_operation", billingScope: "base",
+        description: "Lift Off", chargeCode: "LIFT_OFF_20", unit: "per_container", containerSize: "20",
+        rateAmount: 500, sortOrder: 20, notes: "Applied only to 20ft containers.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "storage",
-        description: "Storage",
-        chargeCode: "STORAGE_20_DAY",
-        unit: "storage_day",
-        containerSize: "20",
-        rateAmount: 100,
-        sortOrder: 40,
-        notes: "Reference: per 20 ft container per day.",
+        rateType: "local", category: "container_yard_operation", billingScope: "base",
+        description: "Lift Off", chargeCode: "LIFT_OFF_40", unit: "per_container", containerSize: "40",
+        rateAmount: 1000, sortOrder: 21, notes: "Applied only to 40ft containers.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "storage",
-        description: "Storage",
-        chargeCode: "STORAGE_40_DAY",
-        unit: "storage_day",
-        containerSize: "40",
-        rateAmount: 200,
-        sortOrder: 50,
-        notes: "Reference: per 40 ft container per day.",
+        rateType: "local", category: "container_yard_operation", billingScope: "display_only",
+        description: "Total Handling per Container Cycle", chargeCode: "TOTAL_HANDLING_CYCLE_20", unit: "per_container", containerSize: "20",
+        rateAmount: 1000, sortOrder: 30, notes: "Display reference only. Lift On and Lift Off are billed separately.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "display_only",
-        description: "Congestion Surcharge",
-        chargeCode: "CONGESTION_20",
-        unit: "per_container",
-        containerSize: "20",
-        rateAmount: 100,
-        sortOrder: 60,
-        notes: "Display reference only by default. Change billing scope to Base Auto Charge if congestion should be billed automatically.",
+        rateType: "local", category: "container_yard_operation", billingScope: "display_only",
+        description: "Total Handling per Container Cycle", chargeCode: "TOTAL_HANDLING_CYCLE_40", unit: "per_container", containerSize: "40",
+        rateAmount: 2000, sortOrder: 31, notes: "Display reference only. Lift On and Lift Off are billed separately.",
     },
     {
-        rateType: "local",
-        category: "container_yard_operation",
-        billingScope: "display_only",
-        description: "Congestion Surcharge",
-        chargeCode: "CONGESTION_40",
-        unit: "per_container",
-        containerSize: "40",
-        rateAmount: 200,
-        sortOrder: 70,
-        notes: "Display reference only by default. Change billing scope to Base Auto Charge if congestion should be billed automatically.",
+        rateType: "local", category: "container_yard_operation", billingScope: "storage",
+        description: "Storage", chargeCode: "STORAGE_20_DAY", unit: "storage_day", containerSize: "20",
+        rateAmount: 100, sortOrder: 40, notes: "Per 20ft container per day.",
     },
     {
-        rateType: "local",
-        category: "stripping_stuffing",
-        billingScope: "optional_stripping_stuffing",
-        description: "Stripping / Stuffing (with Mano)",
-        chargeCode: "STRIPPING_STUFFING_MANO_20",
-        unit: "per_container",
-        containerSize: "20",
-        rateAmount: 4000,
-        sortOrder: 80,
-        notes: "Added only when the booking service is Stripping / Stuffing with Mano.",
+        rateType: "local", category: "container_yard_operation", billingScope: "storage",
+        description: "Storage", chargeCode: "STORAGE_40_DAY", unit: "storage_day", containerSize: "40",
+        rateAmount: 200, sortOrder: 50, notes: "Per 40ft container per day.",
     },
     {
-        rateType: "local",
-        category: "stripping_stuffing",
-        billingScope: "optional_stripping_stuffing",
-        description: "Stripping / Stuffing (with Mano)",
-        chargeCode: "STRIPPING_STUFFING_MANO_40",
-        unit: "per_container",
-        containerSize: "40",
-        rateAmount: 8000,
-        sortOrder: 90,
-        notes: "Added only when the booking service is Stripping / Stuffing with Mano.",
+        rateType: "local", category: "container_yard_operation", billingScope: "display_only",
+        description: "Congestion Surcharge", chargeCode: "CONGESTION_20", unit: "per_container", containerSize: "20",
+        rateAmount: 100, sortOrder: 60, notes: "Manual option only when the yard has no available space.",
+    },
+    {
+        rateType: "local", category: "container_yard_operation", billingScope: "display_only",
+        description: "Congestion Surcharge", chargeCode: "CONGESTION_40", unit: "per_container", containerSize: "40",
+        rateAmount: 200, sortOrder: 70, notes: "Manual option only when the yard has no available space.",
+    },
+    {
+        rateType: "local", category: "stripping_stuffing", billingScope: "optional_stripping_stuffing",
+        description: "Stripping / Stuffing (with Mano)", chargeCode: "STRIPPING_STUFFING_MANO_20", unit: "per_container", containerSize: "20",
+        rateAmount: 4000, sortOrder: 80, notes: "Added only when explicitly selected for the booking.",
+    },
+    {
+        rateType: "local", category: "stripping_stuffing", billingScope: "optional_stripping_stuffing",
+        description: "Stripping / Stuffing (with Mano)", chargeCode: "STRIPPING_STUFFING_MANO_40", unit: "per_container", containerSize: "40",
+        rateAmount: 8000, sortOrder: 90, notes: "Added only when explicitly selected for the booking.",
     },
 ];
 const normalizedUnitValues = new Set(["per_container", "per_teu", "per_day", "storage_day", "fixed"]);
@@ -150,16 +102,21 @@ const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", 
     const isLiftOut = /\blift\s*(out|off)\b/.test(descriptionText);
     const isLift = isLiftIn || isLiftOut;
     const isStorage = /\bstorage\b/.test(descriptionText) || /\/\s*day\b|\bper\s+day\b|\bdaily\b/.test(unitText);
+    const isCongestion = /\bcongestion\b/.test(descriptionText);
+    const isDocumentation = /\bdocumentation\b/.test(descriptionText);
     const isStrippingStuffing = /\bstripping\b|\bstuffing\b|\bmano\b/.test(descriptionText);
     const isTotalHandling = /\btotal\s+handling\b/.test(descriptionText);
     const isFixed = /\bfixed\b|\bflat\b/.test(unitText);
     let unit = normalizedUnitValues.has(requestedUnit) ? requestedUnit : currentRate?.unit || "per_container";
-    if (isLift) {
-        unit = "per_teu";
-        containerSize = "all";
+    if (isLift || isCongestion) {
+        unit = "per_container";
     }
     else if (isStorage) {
         unit = "storage_day";
+    }
+    else if (isDocumentation && /transaction|fixed/.test(unitText)) {
+        unit = /fixed/.test(unitText) ? "fixed" : "per_container";
+        containerSize = "all";
     }
     else if (isFixed) {
         unit = "fixed";
@@ -168,7 +125,7 @@ const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", 
         unit = "per_container";
     }
     let billingScope = currentRate?.billingScope || "base";
-    if (isTotalHandling)
+    if (isTotalHandling || isCongestion)
         billingScope = "display_only";
     else if (isStrippingStuffing)
         billingScope = "optional_stripping_stuffing";
@@ -179,23 +136,34 @@ const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", 
     const category = isStrippingStuffing ? "stripping_stuffing" : (currentRate?.category || "container_yard_operation");
     let sortOrder = Number(currentRate?.sortOrder) || 100;
     if (isLiftIn)
-        sortOrder = 10;
+        sortOrder = containerSize === "40" ? 11 : 10;
     else if (isLiftOut)
-        sortOrder = 20;
+        sortOrder = containerSize === "40" ? 21 : 20;
     else if (isTotalHandling)
-        sortOrder = 30;
+        sortOrder = containerSize === "40" ? 31 : 30;
     else if (isStorage && containerSize === "20")
         sortOrder = 40;
     else if (isStorage && containerSize === "40")
         sortOrder = 50;
-    else if (/\bcongestion\b/.test(descriptionText) && containerSize === "20")
+    else if (isCongestion && containerSize === "20")
         sortOrder = 60;
-    else if (/\bcongestion\b/.test(descriptionText) && containerSize === "40")
+    else if (isCongestion && containerSize === "40")
         sortOrder = 70;
     else if (isStrippingStuffing && containerSize === "20")
         sortOrder = 80;
     else if (isStrippingStuffing && containerSize === "40")
         sortOrder = 90;
+    const suggestedChargeCode = isLiftIn && ["20", "40"].includes(containerSize)
+        ? `LIFT_ON_${containerSize}`
+        : isLiftOut && ["20", "40"].includes(containerSize)
+            ? `LIFT_OFF_${containerSize}`
+            : isCongestion && ["20", "40"].includes(containerSize)
+                ? `CONGESTION_${containerSize}`
+                : isStorage && ["20", "40"].includes(containerSize)
+                    ? `STORAGE_${containerSize}_DAY`
+                    : isDocumentation
+                        ? "DOCUMENTATION"
+                        : "";
     return {
         category,
         billingScope,
@@ -204,6 +172,8 @@ const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", 
         containerType: currentRate?.containerType || "all",
         loadStatus: currentRate?.loadStatus || "all",
         sortOrder,
+        suggestedChargeCode,
+        requiresContainerSize: isLift || isCongestion || isStorage || isTotalHandling,
     };
 };
 const buildRatePayload = (body = {}, currentRate = null) => {
@@ -213,12 +183,13 @@ const buildRatePayload = (body = {}, currentRate = null) => {
         ?? currentRate?.unitLabel
         ?? getDefaultUnitLabel(requestedUnit || currentRate?.unit, currentRate?.containerSize)).trim();
     const rules = inferRateRules({ description, unitLabel, requestedUnit, currentRate });
+    const { suggestedChargeCode, requiresContainerSize, ...normalizedRules } = rules;
     return normalizeRatePayload({
         description,
-        chargeCode: currentRate?.chargeCode || body.chargeCode || toChargeCode(description, unitLabel),
+        chargeCode: suggestedChargeCode || currentRate?.chargeCode || body.chargeCode || toChargeCode(description, unitLabel),
         rateType: normalizeRateType(body.rateType ?? currentRate?.rateType),
         unitLabel,
-        ...rules,
+        ...normalizedRules,
         rateAmount: body.rateAmount ?? currentRate?.rateAmount ?? 0,
         freeDays: 0,
         minimumAmount: 0,
@@ -299,6 +270,17 @@ const listBillingRates = async (req, res) => {
     return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing") });
 };
 exports.listBillingRates = listBillingRates;
+const validateConfiguredRate = (payload) => {
+    const description = String(payload.description || "").toLowerCase();
+    const needsSize = /lift|storage|congestion|total\s+handling/.test(description);
+    if (needsSize && !["20", "40"].includes(String(payload.containerSize))) {
+        return "Select a 20ft or 40ft unit for this billing rate.";
+    }
+    if (/congestion/.test(description) && payload.billingScope !== "display_only") {
+        return "Congestion Surcharge must remain a manual option and cannot be an automatic base charge.";
+    }
+    return "";
+};
 const createBillingRate = async (req, res) => {
     const payload = buildRatePayload(req.body);
     if (!payload.description || !payload.unitLabel) {
@@ -307,6 +289,8 @@ const createBillingRate = async (req, res) => {
     if (payload.rateAmount <= 0) {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
     }
+    const validationError = validateConfiguredRate(payload);
+    if (validationError) return res.status(400).json({ success: false, message: validationError });
     const rate = await BillingRate_js_1.default.create(payload);
     const safe = safeRate(rate);
     (0, socket_js_1.emitToAdmins)("billing_rate:created", safe);
@@ -324,6 +308,8 @@ const updateBillingRate = async (req, res) => {
     if (payload.rateAmount <= 0) {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
     }
+    const validationError = validateConfiguredRate(payload);
+    if (validationError) return res.status(400).json({ success: false, message: validationError });
     Object.assign(rate, payload);
     await rate.save();
     const safe = safeRate(rate);
@@ -383,8 +369,7 @@ const listActiveBillingRates = async (req, res) => {
         status: "active",
         effectiveDate: { $lte: new Date() },
     };
-    if (req.query.rateType && req.query.rateType !== "all")
-        query.rateType = normalizeRateType(req.query.rateType);
+    query.rateType = normalizeRateType(req.user?.companyMarket || req.user?.rateType || "local");
     query.billingScope = { $ne: "optional_stripping_stuffing" };
     const rates = await BillingRate_js_1.default.find(query).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
     const latestByCode = new Map();

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -120,7 +120,7 @@ const buildPaymentReferenceNumber = async () => {
 };
 const normalizeBillingRateKey = (value) => String(value || "all").trim().toLowerCase();
 const normalizeBookingServiceType = () => "container_yard";
-const normalizeRateType = () => "local";
+const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
 const parseBookingDate = (value) => {
     if (!value)
         return null;
@@ -171,6 +171,32 @@ const validateBookingDateRange = ({ inDate, outDate, expectedArrivalDate }) => {
     }
     return { valid: true, inDate: parsedIn, outDate: parsedOut, days: parsedOut ? getDateRangeDays(parsedIn, parsedOut) : 0 };
 };
+const MAX_CONTAINERS_PER_HOUR = 4;
+const getBookingHourWindow = (value) => {
+    const start = parseBookingDate(value);
+    if (!start) return null;
+    start.setMinutes(0, 0, 0);
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    return { start, end };
+};
+const ensureBookingHourCapacity = async (value, excludeBookingId = null) => {
+    const window = getBookingHourWindow(value);
+    if (!window) return;
+    const filter = {
+        inDate: { $gte: window.start, $lt: window.end },
+        status: { $nin: TERMINAL_BOOKING_STATUSES },
+    };
+    if (excludeBookingId) filter._id = { $ne: excludeBookingId };
+    const bookedCount = await Booking_js_1.default.countDocuments(filter);
+    if (bookedCount >= MAX_CONTAINERS_PER_HOUR) {
+        const displayTime = window.start.toLocaleString("en-PH", {
+            month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+        });
+        const error = new Error(`The ${displayTime} schedule is full. Operations can accept only ${MAX_CONTAINERS_PER_HOUR} containers per hour.`);
+        error.statusCode = 409;
+        throw error;
+    }
+};
 const validateGateOutDate = (booking, outDate) => {
     const parsedIn = parseBookingDate(booking.inDate || booking.expectedArrivalDate || booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt);
     const parsedOut = parseBookingDate(outDate);
@@ -190,9 +216,12 @@ const rateMatchesBooking = (rate, booking) => {
     const type = normalizeBillingRateKey(booking.containerType);
     const loadStatus = normalizeBillingRateKey(booking.containerLoadStatus);
     const rateSize = String(rate.containerSize || "all");
+    const chargeCode = String(rate.chargeCode || "").toUpperCase();
+    const codedSize = /^(?:LIFT_ON|LIFT_OFF|STORAGE|CONGESTION)_(20|40)(?:_|$)/.exec(chargeCode)?.[1] || "";
+    const effectiveRateSize = codedSize || rateSize;
     const rateContainerType = normalizeBillingRateKey(rate.containerType);
     const rateLoad = normalizeBillingRateKey(rate.loadStatus);
-    return (rateSize === "all" || rateSize === size)
+    return (effectiveRateSize === "all" || effectiveRateSize === size)
         && (rateContainerType === "all" || rateContainerType === type)
         && (rateLoad === "all" || rateLoad === loadStatus);
 };
@@ -255,7 +284,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
     });
     const additionalLineItems = (booking.additionalBillingCharges || []).map((item, index) => ({
         rate: null,
-        chargeCode: `ADDITIONAL_${index + 1}`,
+        chargeCode: item.chargeCode || `ADDITIONAL_${index + 1}`,
         description: item.description || "Additional Charge",
         unit: "fixed",
         quantity: Number(item.quantity) || 0,
@@ -390,6 +419,9 @@ const safeBooking = (booking) => {
         billingLineItems: doc.billingLineItems || [],
         additionalBillingCharges: (doc.additionalBillingCharges || []).map((item) => ({
             id: String(item._id),
+            rate: item.rate ? String(item.rate) : "",
+            chargeCode: item.chargeCode || "",
+            source: item.source || "manual",
             description: item.description,
             quantity: Number(item.quantity) || 0,
             rateAmount: Number(item.rateAmount) || 0,
@@ -542,6 +574,58 @@ const recalculateBlockOccupancy = async (blockId) => {
     await YardBlock_js_1.default.findByIdAndUpdate(blockId, {
         occupiedSlots: Math.round(occupied * 100) / 100,
     });
+};
+const getYardSpaceAvailability = async (containerSize) => {
+    const blocks = await YardBlock_js_1.default.find({ status: "active" }).select("containerSize teuSlots status");
+    if (blocks.length === 0) return { hasAvailableSpace: false, availableCapacity: 0 };
+    let availableCapacity = 0;
+    for (const block of blocks) {
+        const [inventoryContainers, bookingContainers] = await Promise.all([
+            InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize"),
+            Booking_js_1.default.find(activeBookingFilterForBlock(block._id)).select("containerSize"),
+        ]);
+        const usedCapacity = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
+        const requiredCapacity = getYardCapacityUsage(containerSize, block.containerSize);
+        const remaining = Math.max(Number(block.teuSlots) - usedCapacity, 0);
+        availableCapacity += remaining;
+        if (remaining >= requiredCapacity) {
+            return { hasAvailableSpace: true, availableCapacity: Math.round(availableCapacity * 100) / 100 };
+        }
+    }
+    return { hasAvailableSpace: false, availableCapacity: Math.round(availableCapacity * 100) / 100 };
+};
+const resolveCongestionSurchargeOption = async (booking) => {
+    const yard = await getYardSpaceAvailability(booking.containerSize);
+    if (yard.hasAvailableSpace) {
+        return { available: false, reason: "Yard space is still available.", yard };
+    }
+    const rate = await BillingRate_js_1.default.findOne({
+        status: "active",
+        rateType: normalizeRateType(booking.rateType),
+        effectiveDate: { $lte: new Date() },
+        billingScope: "display_only",
+        containerSize: String(booking.containerSize),
+        $or: [
+            { chargeCode: `CONGESTION_${booking.containerSize}` },
+            { description: { $regex: "congestion", $options: "i" } },
+        ],
+    }).sort({ effectiveDate: -1, createdAt: -1 });
+    if (!rate) {
+        return { available: false, reason: `No active ${booking.containerSize}ft congestion surcharge is configured.`, yard };
+    }
+    return {
+        available: true,
+        reason: "The yard has no available space.",
+        yard,
+        rate: {
+            id: String(rate._id),
+            chargeCode: rate.chargeCode,
+            description: rate.description,
+            rateAmount: Number(rate.rateAmount) || 0,
+            containerSize: rate.containerSize,
+            rateType: normalizeRateType(rate.rateType),
+        },
+    };
 };
 const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, containerSize, bookingId }) => {
     if (!areaId) {
@@ -698,16 +782,25 @@ const handleValidationError = (error, res) => {
 };
 const createClientBooking = async (req, res) => {
     const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
-    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName];
+    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields." });
     }
     if (![20, 40].includes(Number(containerSize))) {
         return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
     }
+    if (!Number.isFinite(Number(weight)) || Number(weight) <= 0) {
+        return res.status(400).json({ success: false, message: "Container weight is required and must be greater than zero." });
+    }
     const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate });
     if (!dateRange.valid) {
         return res.status(400).json({ success: false, message: dateRange.message });
+    }
+    try {
+        await ensureBookingHourCapacity(dateRange.inDate);
+    }
+    catch (error) {
+        return handleValidationError(error, res);
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
     const activeDuplicate = await Booking_js_1.default.findOne({
@@ -744,7 +837,7 @@ const createClientBooking = async (req, res) => {
         containerType,
         containerLoadStatus: containerLoadStatus || "empty",
         serviceType: "container_yard",
-        rateType: "local",
+        rateType: normalizeRateType(req.user.companyMarket),
         shippingLine,
         truckPlateNumber: truckPlateNumber || "",
         driverName: driverName || "",
@@ -752,7 +845,7 @@ const createClientBooking = async (req, res) => {
         blNumber: blNumber || "",
         vesselVoyage: vesselVoyage || "",
         cargoDescription: cargoDescription || "",
-        weight: Number(weight) || 0,
+        weight: Number(weight),
         expectedArrivalDate: dateRange.inDate,
         inDate: dateRange.inDate,
         outDate: null,
@@ -795,16 +888,25 @@ const resubmitClientBooking = async (req, res) => {
         return res.status(400).json({ success: false, message: "Only rejected bookings can be resubmitted." });
     }
     const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
-    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName];
+    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." });
     }
     if (![20, 40].includes(Number(containerSize))) {
         return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
     }
+    if (!Number.isFinite(Number(weight)) || Number(weight) <= 0) {
+        return res.status(400).json({ success: false, message: "Container weight is required and must be greater than zero." });
+    }
     const dateRange = validateBookingDateRange({ inDate, outDate, expectedArrivalDate });
     if (!dateRange.valid) {
         return res.status(400).json({ success: false, message: dateRange.message });
+    }
+    try {
+        await ensureBookingHourCapacity(dateRange.inDate, booking._id);
+    }
+    catch (error) {
+        return handleValidationError(error, res);
     }
     const normalizedContainer = normalizeContainerNumber(containerNumber);
     const activeDuplicate = await Booking_js_1.default.findOne({
@@ -821,7 +923,7 @@ const resubmitClientBooking = async (req, res) => {
     booking.containerType = containerType;
     booking.containerLoadStatus = containerLoadStatus || "empty";
     booking.serviceType = "container_yard";
-    booking.rateType = "local";
+    booking.rateType = normalizeRateType(req.user.companyMarket);
     booking.shippingLine = shippingLine;
     booking.truckPlateNumber = truckPlateNumber || "";
     booking.driverName = driverName || "";
@@ -829,7 +931,7 @@ const resubmitClientBooking = async (req, res) => {
     booking.blNumber = blNumber || "";
     booking.vesselVoyage = vesselVoyage || "";
     booking.cargoDescription = cargoDescription || "";
-    booking.weight = Number(weight) || 0;
+    booking.weight = Number(weight);
     booking.expectedArrivalDate = dateRange.inDate;
     booking.inDate = dateRange.inDate;
     booking.outDate = null;
@@ -1133,6 +1235,57 @@ const updateBookingBillingOperation = async (req, res) => {
     return res.json({ success: true, message: billingResult ? "Billing operation updated and bill recomputed." : "Billing operation updated.", booking: payload });
 };
 exports.updateBookingBillingOperation = updateBookingBillingOperation;
+const getBookingCongestionSurchargeOption = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
+    const option = await resolveCongestionSurchargeOption(booking);
+    return res.json({ success: true, option });
+};
+exports.getBookingCongestionSurchargeOption = getBookingCongestionSurchargeOption;
+const addBookingCongestionSurcharge = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
+    if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
+        return res.status(400).json({ success: false, message: "Congestion Surcharge can only be added before payment is submitted or after a rejected payment." });
+    }
+    const option = await resolveCongestionSurchargeOption(booking);
+    if (!option.available || !option.rate) {
+        return res.status(400).json({ success: false, message: option.reason || "Congestion Surcharge is not available." });
+    }
+    const alreadyAdded = (booking.additionalBillingCharges || []).some((item) => String(item.chargeCode || "") === option.rate.chargeCode);
+    if (alreadyAdded) {
+        return res.status(409).json({ success: false, message: "Congestion Surcharge has already been added to this booking." });
+    }
+    booking.additionalBillingCharges.push({
+        rate: option.rate.id,
+        chargeCode: option.rate.chargeCode,
+        source: "congestion_surcharge",
+        description: option.rate.description || "Congestion Surcharge",
+        quantity: 1,
+        rateAmount: option.rate.rateAmount,
+        amount: option.rate.rateAmount,
+        notes: "Manually added because the yard had no available space.",
+        addedBy: req.user._id,
+        addedAt: new Date(),
+    });
+    const canCompute = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status);
+    const billingResult = canCompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
+    addHistory(booking, {
+        remarks: billingResult
+            ? `Congestion Surcharge added. Bill recomputed at PHP ${billingResult.total.toLocaleString()}.`
+            : "Congestion Surcharge added because the yard had no available space.",
+        changedBy: req.user._id,
+    });
+    await booking.save();
+    await booking.populate("client", "name email companyName phoneNumber");
+    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedBlock", "name code");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:congestion_surcharge_added", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:congestion_surcharge_added", payload);
+    return res.status(201).json({ success: true, message: "Congestion Surcharge added.", booking: payload });
+};
+exports.addBookingCongestionSurcharge = addBookingCongestionSurcharge;
 const addBookingAdditionalCharge = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
@@ -1145,6 +1298,9 @@ const addBookingAdditionalCharge = async (req, res) => {
     const rateAmount = Math.max(Number(req.body.rateAmount) || 0, 0);
     if (!description)
         return res.status(400).json({ success: false, message: "Additional charge description is required." });
+    if (/congestion/i.test(description)) {
+        return res.status(400).json({ success: false, message: "Use the Congestion Surcharge option. It is available only when the yard has no remaining space." });
+    }
     if (rateAmount <= 0)
         return res.status(400).json({ success: false, message: "Additional charge rate must be greater than zero." });
     booking.additionalBillingCharges.push({
@@ -1221,6 +1377,9 @@ const submitBookingPayment = async (req, res) => {
     if (!paymentType) {
         return res.status(400).json({ success: false, message: "Please select an available payment type." });
     }
+    if (paymentType.type === "cash") {
+        return res.status(400).json({ success: false, message: "Cash payments must be recorded by the authorized admin cashier." });
+    }
     const paymentProofs = await uploadBookingPaymentDocuments({
         files: req.files,
         bookingReference: booking.bookingReference,
@@ -1269,6 +1428,68 @@ const submitBookingPayment = async (req, res) => {
     return res.json({ success: true, message: "Payment submitted for admin review.", booking: payload });
 };
 exports.submitBookingPayment = submitBookingPayment;
+const recordAdminCashPayment = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
+    if (!["gate_out_requested", "gate_out_approved"].includes(booking.status) || !booking.outDate) {
+        return res.status(400).json({ success: false, message: "Cash payment can only be recorded after Date Out and final billing are available." });
+    }
+    if (booking.billingStatus === "paid_approved") {
+        return res.status(409).json({ success: false, message: "This booking is already marked as paid." });
+    }
+    const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
+    if (!billingResult.hasMatchedRates || billingResult.total <= 0) {
+        return res.status(400).json({ success: false, message: "Complete Rate Setup before recording the cash payment." });
+    }
+    const cashQuery = { type: "cash", status: "active" };
+    if (req.body.paymentTypeId) cashQuery._id = req.body.paymentTypeId;
+    const paymentType = await PaymentType_js_1.default.findOne(cashQuery).sort({ sortOrder: 1, createdAt: 1 });
+    if (!paymentType) {
+        return res.status(400).json({ success: false, message: "No active Cash payment type is configured." });
+    }
+    const paidAmount = req.body.amount === undefined || req.body.amount === ""
+        ? billingResult.total
+        : Number(req.body.amount);
+    if (!Number.isFinite(paidAmount) || paidAmount !== billingResult.total) {
+        return res.status(400).json({ success: false, message: `Cash payment must match the final bill of PHP ${billingResult.total.toLocaleString()}.` });
+    }
+    booking.paymentAmount = billingResult.total;
+    booking.paymentType = paymentType._id;
+    booking.paymentTypeSnapshot = {
+        type: "cash",
+        name: paymentType.name || "Cash",
+        bankName: "",
+        accountNumber: "",
+        accountName: "",
+        qrUrl: "",
+    };
+    booking.paymentReferenceNumber = String(req.body.paymentReferenceNumber || booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim();
+    booking.paymentDate = req.body.paymentDate || new Date();
+    booking.paymentRemarks = String(req.body.paymentRemarks || req.body.remarks || "Cash received by authorized admin cashier.").trim();
+    booking.paymentSubmittedAt = new Date();
+    booking.paymentReviewedAt = new Date();
+    booking.paymentReviewedBy = req.user._id;
+    booking.paymentRejectionReason = "";
+    booking.billingStatus = "paid_approved";
+    addHistory(booking, {
+        billingStatus: "paid_approved",
+        remarks: `Cash payment recorded and approved by admin. Reference: ${booking.paymentReferenceNumber}.`,
+        changedBy: req.user._id,
+    });
+    await booking.save();
+    await booking.populate("client", "name email companyName phoneNumber");
+    await booking.populate("assignedArea", "name code");
+    await booking.populate("assignedBlock", "name code");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:cash_payment_recorded", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:cash_payment_recorded", payload);
+    await notifyClient(booking, "Cash payment recorded", "Your cash payment was recorded and approved by the authorized cashier.", [
+        { label: "Payment Reference", value: booking.paymentReferenceNumber },
+        { label: "Amount", value: `PHP ${booking.paymentAmount.toLocaleString()}` },
+    ]);
+    return res.json({ success: true, message: "Cash payment recorded and approved.", booking: payload });
+};
+exports.recordAdminCashPayment = recordAdminCashPayment;
 const approveBookingPayment = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)

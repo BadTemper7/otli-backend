@@ -31,6 +31,9 @@ const billingLineItemSchema = new mongoose_1.default.Schema({
     amount: { type: Number, default: 0 },
 }, { _id: false });
 const additionalChargeSchema = new mongoose_1.default.Schema({
+    rate: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "BillingRate", default: null },
+    chargeCode: { type: String, default: "", trim: true },
+    source: { type: String, enum: ["manual", "congestion_surcharge"], default: "manual" },
     description: { type: String, required: true, trim: true },
     quantity: { type: Number, default: 1, min: 0 },
     rateAmount: { type: Number, default: 0, min: 0 },
