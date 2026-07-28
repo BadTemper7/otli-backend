@@ -75,7 +75,7 @@ const updateUser = async (req, res) => {
     if (!user) {
         return res.status(404).json({ success: false, message: "User not found." });
     }
-    const { name, email, status, role, permissions, companyName, companyAddress, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, } = req.body;
+    const { name, email, status, role, permissions, companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, } = req.body;
     if (user.isLockedSeed) {
         user.name = name || user.name;
     }
@@ -90,6 +90,8 @@ const updateUser = async (req, res) => {
     }
     user.companyName = companyName ?? user.companyName;
     user.companyAddress = companyAddress ?? user.companyAddress;
+    user.companyType = companyType ?? user.companyType;
+    user.companyTypeOther = companyTypeOther ?? user.companyTypeOther;
     user.phoneNumber = phoneNumber ?? user.phoneNumber;
     user.representativeFirstName = representativeFirstName ?? user.representativeFirstName;
     user.representativeMiddleName = representativeMiddleName ?? user.representativeMiddleName;

@@ -136,6 +136,8 @@ const bookingSchema = new mongoose_1.default.Schema({
     billingLineItems: { type: [billingLineItemSchema], default: [] },
     additionalBillingCharges: { type: [additionalChargeSchema], default: [] },
     billingSubtotal: { type: Number, default: 0 },
+    vatRate: { type: Number, default: 0.12 },
+    vatAmount: { type: Number, default: 0 },
     billingTotal: { type: Number, default: 0 },
     billingDays: { type: Number, default: 0 },
     billingComputedAt: { type: Date, default: null },
@@ -174,6 +176,8 @@ bookingSchema.pre("validate", function () {
     this.assignedRow = Math.max(Number(this.assignedRow) || 1, 1);
     this.assignedTier = Math.max(Number(this.assignedTier) || 1, 1);
     this.billingSubtotal = Math.max(Number(this.billingSubtotal) || 0, 0);
+    this.vatRate = Math.max(Number(this.vatRate) || 0, 0);
+    this.vatAmount = Math.max(Number(this.vatAmount) || 0, 0);
     this.billingTotal = Math.max(Number(this.billingTotal) || 0, 0);
     this.billingDays = Math.max(Number(this.billingDays) || 0, 0);
     this.paymentAmount = Math.max(Number(this.paymentAmount) || 0, 0);

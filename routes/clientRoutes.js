@@ -14,6 +14,7 @@ const billingRateController_js_1 = require("../controllers/billingRateController
 const paymentTypeController_js_1 = require("../controllers/paymentTypeController.js");
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.clientOnly);
+router.patch("/account/resubmit", uploadMiddleware_js_1.clientRegistrationUpload, (0, asyncHandler_js_1.default)(authController_js_1.resubmitRejectedClient));
 router.get("/account-status", (req, res) => {
     return res.json({
         success: true,

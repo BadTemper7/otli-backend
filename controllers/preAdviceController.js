@@ -19,7 +19,7 @@ const documentLabels = {
     customsClearance: "Customs Clearance",
     otherDocument: "Other Document",
 };
-const requiredDocumentFields = ["deliveryOrder", "bookingConfirmation"];
+const requiredDocumentFields = ["deliveryOrder"];
 const normalizeContainerNumber = (value = "") => {
     return String(value).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
 };

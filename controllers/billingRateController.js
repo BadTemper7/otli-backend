@@ -11,6 +11,7 @@ const toNumber = (value, fallback = 0) => {
     return Number.isFinite(parsed) ? parsed : fallback;
 };
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
+const isDocumentationRate = (rate = {}) => /documentation|document_fee|doc_fee/.test(`${rate.description || ""} ${rate.chargeCode || ""}`.toLowerCase());
 exports.OTLI_REFERENCE_RATES = [
     {
         rateType: "local", category: "container_yard_operation", billingScope: "base",
@@ -267,7 +268,7 @@ const listBillingRates = async (req, res) => {
         const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
         if (!latestByCode.has(key)) latestByCode.set(key, rate);
     }
-    return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing") });
+    return res.json({ success: true, rates: Array.from(latestByCode.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing" && !isDocumentationRate(rate)) });
 };
 exports.listBillingRates = listBillingRates;
 const validateConfiguredRate = (payload) => {
@@ -285,6 +286,9 @@ const createBillingRate = async (req, res) => {
     const payload = buildRatePayload(req.body);
     if (!payload.description || !payload.unitLabel) {
         return res.status(400).json({ success: false, message: "Description and Unit are required." });
+    }
+    if (isDocumentationRate(payload)) {
+        return res.status(400).json({ success: false, message: "Documentation Fee has been removed and cannot be configured." });
     }
     if (payload.rateAmount <= 0) {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
@@ -304,6 +308,9 @@ const updateBillingRate = async (req, res) => {
     const payload = buildRatePayload(req.body, rate);
     if (!payload.description || !payload.unitLabel) {
         return res.status(400).json({ success: false, message: "Description and Unit are required." });
+    }
+    if (isDocumentationRate(payload)) {
+        return res.status(400).json({ success: false, message: "Documentation Fee has been removed and cannot be configured." });
     }
     if (payload.rateAmount <= 0) {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
@@ -369,7 +376,9 @@ const listActiveBillingRates = async (req, res) => {
         status: "active",
         effectiveDate: { $lte: new Date() },
     };
-    query.rateType = normalizeRateType(req.user?.companyMarket || req.user?.rateType || "local");
+    if (req.query.rateType && req.query.rateType !== "all") {
+        query.rateType = normalizeRateType(req.query.rateType);
+    }
     query.billingScope = { $ne: "optional_stripping_stuffing" };
     const rates = await BillingRate_js_1.default.find(query).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
     const latestByCode = new Map();
@@ -378,6 +387,6 @@ const listActiveBillingRates = async (req, res) => {
         if (!latestByCode.has(key))
             latestByCode.set(key, rate);
     }
-    return res.json({ success: true, rates: Array.from(latestByCode.values()).map(safeRate) });
+    return res.json({ success: true, rates: Array.from(latestByCode.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate) });
 };
 exports.listActiveBillingRates = listActiveBillingRates;

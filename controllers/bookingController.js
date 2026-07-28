@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -236,6 +236,9 @@ const getLatestRateByChargeCode = (rates = []) => {
 };
 const shouldApplyBillingRate = (rate, booking) => {
     const scope = String(rate.billingScope || "base");
+    const rateText = `${rate.chargeCode || ""} ${rate.description || ""}`.toLowerCase();
+    if (/documentation|document_fee|doc_fee/.test(rateText))
+        return false;
     if (scope === "display_only")
         return false;
     if (scope === "optional_stripping_stuffing") return false;
@@ -298,10 +301,15 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
     }));
     const allLineItems = [...lineItems, ...additionalLineItems];
     const subtotal = Math.round(allLineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
-    const total = subtotal;
+    const configuredVatRate = Number(process.env.VAT_RATE ?? 0.12);
+    const vatRate = Number.isFinite(configuredVatRate) && configuredVatRate >= 0 ? configuredVatRate : 0.12;
+    const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
+    const total = Math.round((subtotal + vatAmount) * 100) / 100;
     const result = {
         lineItems: allLineItems,
         subtotal,
+        vatRate,
+        vatAmount,
         total,
         days: storageDays,
         computedAt: effectiveDate,
@@ -310,6 +318,8 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
     if (persist) {
         booking.billingLineItems = allLineItems;
         booking.billingSubtotal = subtotal;
+        booking.vatRate = vatRate;
+        booking.vatAmount = vatAmount;
         booking.billingTotal = total;
         booking.billingDays = storageDays;
         booking.billingComputedAt = effectiveDate;
@@ -431,6 +441,8 @@ const safeBooking = (booking) => {
             addedAt: item.addedAt,
         })),
         billingSubtotal: Number(doc.billingSubtotal) || 0,
+        vatRate: Number.isFinite(Number(doc.vatRate)) ? Number(doc.vatRate) : 0.12,
+        vatAmount: Number(doc.vatAmount) || 0,
         billingTotal: Number(doc.billingTotal) || 0,
         billingDays: Number(doc.billingDays) || 0,
         billingComputedAt: doc.billingComputedAt,
@@ -711,35 +723,25 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
         error.statusCode = 400;
         throw error;
     }
-    const occupiedInventorySlot = await InventoryContainer_js_1.default.findOne({
-        block: block._id,
-        bay: nextBay,
-        row: nextRow,
-        tier: nextTier,
-        status: { $ne: "released" },
-    });
-    if (occupiedInventorySlot) {
-        const error = new Error("That bay, row, and tier is already occupied in inventory.");
-        error.statusCode = 409;
-        throw error;
-    }
-    const reservedBookingSlot = await Booking_js_1.default.findOne({
-        _id: { $ne: bookingId },
-        assignedBlock: block._id,
-        assignedBay: nextBay,
-        assignedRow: nextRow,
-        assignedTier: nextTier,
-        status: { $nin: TERMINAL_BOOKING_STATUSES },
-    });
-    if (reservedBookingSlot) {
-        const error = new Error("That bay, row, and tier is already reserved by another active booking.");
-        error.statusCode = 409;
+    const requestedSlotKeys = getReservedSlotKeys({ bay: nextBay, row: nextRow, tier: nextTier, containerSize, yardContainerSize: block.containerSize });
+    if (requestedSlotKeys.length === 2 && nextBay + 1 > Number(block.bayCount || 1)) {
+        const error = new Error("A 40ft container needs two adjacent 20ft slots. Select a bay with an available next bay.");
+        error.statusCode = 400;
         throw error;
     }
     const [inventoryContainers, bookingContainers] = await Promise.all([
-        InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize"),
-        Booking_js_1.default.find({ _id: { $ne: bookingId }, assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("containerSize"),
+        InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize bay row tier"),
+        Booking_js_1.default.find({ _id: { $ne: bookingId }, assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("containerSize assignedBay assignedRow assignedTier"),
     ]);
+    const occupiedKeys = new Set([
+        ...inventoryContainers.flatMap((item) => getReservedSlotKeys({ bay: item.bay, row: item.row, tier: item.tier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
+        ...bookingContainers.flatMap((item) => getReservedSlotKeys({ bay: item.assignedBay, row: item.assignedRow, tier: item.assignedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
+    ]);
+    if (requestedSlotKeys.some((key) => occupiedKeys.has(key))) {
+        const error = new Error("The selected location does not have the required adjacent slot capacity.");
+        error.statusCode = 409;
+        throw error;
+    }
     const usedCapacity = [...inventoryContainers, ...bookingContainers].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
     const containerCapacity = getYardCapacityUsage(containerSize, block.containerSize);
     const capacityUnit = getYardCapacityUnit(block.containerSize);
@@ -759,47 +761,55 @@ const validateYardAssignment = async ({ areaId, blockId, bay, row, tier, contain
     };
 };
 const getSlotKey = (bay, row, tier) => `${bay}-${row}-${tier}`;
+const getReservedSlotKeys = ({ bay, row, tier, containerSize, yardContainerSize }) => {
+    const firstBay = Number(bay) || 1;
+    const keys = [getSlotKey(firstBay, row, tier)];
+    if (Number(containerSize) === 40 && Number(yardContainerSize) === 20) {
+        keys.push(getSlotKey(firstBay + 1, row, tier));
+    }
+    return keys;
+};
 const getYardBlockSlots = async (req, res) => {
     const block = await YardBlock_js_1.default.findById(req.params.blockId).populate("area", "name code isCongestionArea");
     if (!block) {
         return res.status(404).json({ success: false, message: "Yard block not found." });
     }
     const [inventorySlots, bookingSlots, preAdviceSlots] = await Promise.all([
-        InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerNumber bay row tier status"),
-        Booking_js_1.default.find({ assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("bookingReference containerNumber assignedBay assignedRow assignedTier status"),
-        PreAdvice_js_1.default.find({ plannedBlock: block._id, status: "confirmed" }).select("preAdviceNumber containerNumber plannedBay plannedRow plannedTier status"),
+        InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerNumber containerSize bay row tier status"),
+        Booking_js_1.default.find({ assignedBlock: block._id, status: { $nin: TERMINAL_BOOKING_STATUSES } }).select("bookingReference containerNumber containerSize assignedBay assignedRow assignedTier status"),
+        PreAdvice_js_1.default.find({ plannedBlock: block._id, status: "confirmed" }).select("preAdviceNumber containerNumber containerSize plannedBay plannedRow plannedTier status"),
     ]);
     const slots = [
-        ...inventorySlots.map((item) => ({
-            key: getSlotKey(item.bay, item.row, item.tier),
-            bay: Number(item.bay) || 1,
+        ...inventorySlots.flatMap((item) => getReservedSlotKeys({ bay: item.bay, row: item.row, tier: item.tier, containerSize: item.containerSize, yardContainerSize: block.containerSize }).map((key, index) => ({
+            key,
+            bay: (Number(item.bay) || 1) + index,
             row: Number(item.row) || 1,
             tier: Number(item.tier) || 1,
             type: "occupied",
             status: item.status,
             containerNumber: item.containerNumber,
             reference: item.containerNumber,
-        })),
-        ...bookingSlots.map((item) => ({
-            key: getSlotKey(item.assignedBay, item.assignedRow, item.assignedTier),
-            bay: Number(item.assignedBay) || 1,
+        }))),
+        ...bookingSlots.flatMap((item) => getReservedSlotKeys({ bay: item.assignedBay, row: item.assignedRow, tier: item.assignedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize }).map((key, index) => ({
+            key,
+            bay: (Number(item.assignedBay) || 1) + index,
             row: Number(item.assignedRow) || 1,
             tier: Number(item.assignedTier) || 1,
             type: item.status === "stored_in_assigned_area" ? "occupied" : "reserved",
             status: item.status,
             containerNumber: item.containerNumber,
             reference: item.bookingReference,
-        })),
-        ...preAdviceSlots.map((item) => ({
-            key: getSlotKey(item.plannedBay, item.plannedRow, item.plannedTier),
-            bay: Number(item.plannedBay) || 1,
+        }))),
+        ...preAdviceSlots.flatMap((item) => getReservedSlotKeys({ bay: item.plannedBay, row: item.plannedRow, tier: item.plannedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize }).map((key, index) => ({
+            key,
+            bay: (Number(item.plannedBay) || 1) + index,
             row: Number(item.plannedRow) || 1,
             tier: Number(item.plannedTier) || 1,
             type: "reserved",
             status: item.status,
             containerNumber: item.containerNumber,
             reference: item.preAdviceNumber,
-        })),
+        }))),
     ];
     return res.json({
         success: true,
@@ -865,10 +875,10 @@ const createClientBooking = async (req, res) => {
         return res.status(409).json({ success: false, message: "This container is already in active inventory." });
     }
     const bookingReference = await buildSequenceNumber("BK", Booking_js_1.default, "bookingReference");
-    if (!req.files?.deliveryOrder?.[0] || !req.files?.bookingConfirmation?.[0]) {
+    if (!req.files?.deliveryOrder?.[0]) {
         return res.status(400).json({
             success: false,
-            message: "Delivery Order and Booking Confirmation are required for pre-advice verification.",
+            message: "Delivery Order or another supporting delivery document is required for pre-advice verification.",
         });
     }
     const documents = await uploadBookingPreAdviceDocuments({
@@ -884,7 +894,7 @@ const createClientBooking = async (req, res) => {
         containerType,
         containerLoadStatus: containerLoadStatus || "empty",
         serviceType: "container_yard",
-        rateType: normalizeRateType(req.user.companyMarket),
+        rateType: normalizeRateType(rateType),
         shippingLine,
         truckPlateNumber: truckPlateNumber || "",
         driverName: driverName || "",
@@ -970,7 +980,7 @@ const resubmitClientBooking = async (req, res) => {
     booking.containerType = containerType;
     booking.containerLoadStatus = containerLoadStatus || "empty";
     booking.serviceType = "container_yard";
-    booking.rateType = normalizeRateType(req.user.companyMarket);
+    booking.rateType = normalizeRateType(rateType);
     booking.shippingLine = shippingLine;
     booking.truckPlateNumber = truckPlateNumber || "";
     booking.driverName = driverName || "";
@@ -1255,6 +1265,46 @@ const approveBookingGateIn = async (req, res) => {
     return res.json({ success: true, message: "Gate-In approved.", booking: payload });
 };
 exports.approveBookingGateIn = approveBookingGateIn;
+const rejectBookingGateIn = async (req, res) => {
+    const reason = String(req.body.reason || "").trim();
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    if (booking.status !== "approved_area_assigned") {
+        return res.status(400).json({ success: false, message: "Only bookings awaiting gate-in can be rejected in this module." });
+    }
+    if (!reason) {
+        return res.status(400).json({ success: false, message: "Gate-in rejection reason is required." });
+    }
+    const previousBlockId = booking.assignedBlock ? String(booking.assignedBlock) : "";
+    booking.status = "rejected";
+    booking.rejectionReason = `Gate-In rejected: ${reason}`;
+    booking.assignedArea = null;
+    booking.assignedBlock = null;
+    booking.assignedBay = 1;
+    booking.assignedRow = 1;
+    booking.assignedTier = 1;
+    booking.assignedSlotNumber = "";
+    booking.assignedAt = null;
+    booking.assignedBy = null;
+    booking.approvedAt = null;
+    booking.approvedBy = null;
+    booking.additionalBillingCharges = (booking.additionalBillingCharges || []).filter((item) => item.source !== "congestion_surcharge");
+    addHistory(booking, { remarks: `Gate-In rejected: ${reason}. Yard reservation released.`, changedBy: req.user._id });
+    await booking.save();
+    if (previousBlockId) await recalculateBlockOccupancy(previousBlockId);
+    await booking.populate("client", "name email companyName phoneNumber");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:gate_in_rejected", payload);
+    (0, socket_js_1.emitToAdmins)("yard:slot_released", { ...payload, previousBlockId });
+    (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_in_rejected", payload);
+    await notifyClient(booking, "Gate-In rejected", "Your gate-in request was rejected. Review the reason before resubmitting the booking.", [
+        { label: "Reason", value: reason },
+    ]);
+    return res.json({ success: true, message: "Gate-In rejected and yard reservation released.", booking: payload });
+};
+exports.rejectBookingGateIn = rejectBookingGateIn;
 const markBookingStored = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
@@ -1506,7 +1556,7 @@ const submitBookingPayment = async (req, res) => {
         qrUrl: paymentType.qrSecureUrl || paymentType.qrUrl || "",
     };
     booking.paymentReferenceNumber = String(clientPaymentReference || booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim();
-    booking.paymentDate = req.body.paymentDate || new Date();
+    booking.paymentDate = new Date();
     booking.paymentRemarks = req.body.paymentRemarks || "";
     booking.paymentProofs = [...booking.paymentProofs, ...paymentProofs];
     booking.paymentSubmittedAt = new Date();
@@ -1571,7 +1621,7 @@ const recordAdminCashPayment = async (req, res) => {
         qrUrl: "",
     };
     booking.paymentReferenceNumber = String(req.body.paymentReferenceNumber || booking.paymentReferenceNumber || await buildPaymentReferenceNumber()).trim();
-    booking.paymentDate = req.body.paymentDate || new Date();
+    booking.paymentDate = new Date();
     booking.paymentRemarks = String(req.body.paymentRemarks || req.body.remarks || "Cash received by authorized admin cashier.").trim();
     booking.paymentSubmittedAt = new Date();
     booking.paymentReviewedAt = new Date();

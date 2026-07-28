@@ -23,6 +23,15 @@ const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
     if (size === 20) return 0.5;
     return 1;
 };
+const getSlotKey = (bay, row, tier) => `${Number(bay) || 1}-${Number(row) || 1}-${Number(tier) || 1}`;
+const getReservedSlotKeys = ({ bay, row, tier, containerSize, yardContainerSize }) => {
+    const firstBay = Number(bay) || 1;
+    const keys = [getSlotKey(firstBay, row, tier)];
+    if (Number(containerSize) === 40 && Number(yardContainerSize) === 20) {
+        keys.push(getSlotKey(firstBay + 1, row, tier));
+    }
+    return keys;
+};
 const recalculateBlockOccupancy = async (blockId) => {
     if (!blockId)
         return;
@@ -176,7 +185,7 @@ const listInventoryContainers = async (req, res) => {
             .sort({ updatedAt: -1 })
             .limit(300),
     ]);
-    const combined = [...bookingContainers.map(safeBookingContainer), ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" }))];
+    const combined = [...bookingContainers.map(safeBookingContainer), ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" }))].sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
     return res.json({ success: true, containers: combined });
 };
 exports.listInventoryContainers = listInventoryContainers;
@@ -212,24 +221,24 @@ const assignInventoryContainer = async (req, res) => {
         });
     }
     const autoSlotNumber = slotNumber || `${block.code}-B${nextBay}-R${nextRow}-T${nextTier}`;
-    const occupiedSlot = await InventoryContainer_js_1.default.findOne({
-        _id: { $ne: container._id },
-        block: block._id,
-        bay: nextBay,
-        row: nextRow,
-        tier: nextTier,
-        status: { $ne: "released" },
-    });
-    if (occupiedSlot) {
-        return res.status(409).json({ success: false, message: "That bay, row, and tier is already occupied." });
+    const requestedSlotKeys = getReservedSlotKeys({ bay: nextBay, row: nextRow, tier: nextTier, containerSize: container.containerSize, yardContainerSize: block.containerSize });
+    if (requestedSlotKeys.length === 2 && nextBay + 1 > Number(block.bayCount || 1)) {
+        return res.status(400).json({ success: false, message: "A 40ft container needs two adjacent 20ft TEU slots. Select a bay with an available next bay." });
     }
     const [otherInventory, activeBookings] = await Promise.all([
-        InventoryContainer_js_1.default.find({ _id: { $ne: container._id }, block: block._id, status: { $ne: "released" } }).select("containerSize"),
+        InventoryContainer_js_1.default.find({ _id: { $ne: container._id }, block: block._id, status: { $ne: "released" } }).select("containerSize bay row tier"),
         Booking_js_1.default.find({
             assignedBlock: block._id,
             status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] },
-        }).select("containerSize"),
+        }).select("containerSize assignedBay assignedRow assignedTier"),
     ]);
+    const occupiedKeys = new Set([
+        ...otherInventory.flatMap((item) => getReservedSlotKeys({ bay: item.bay, row: item.row, tier: item.tier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
+        ...activeBookings.flatMap((item) => getReservedSlotKeys({ bay: item.assignedBay, row: item.assignedRow, tier: item.assignedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
+    ]);
+    if (requestedSlotKeys.some((key) => occupiedKeys.has(key))) {
+        return res.status(409).json({ success: false, message: "One or both required yard slots are already occupied or reserved." });
+    }
     const usedCapacity = [...otherInventory, ...activeBookings].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
     const incomingCapacity = getYardCapacityUsage(container.containerSize, block.containerSize);
     if (usedCapacity + incomingCapacity > Number(block.teuSlots)) {

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
+exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.resubmitRejectedClient = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const User_js_1 = __importDefault(require("../models/User.js"));
@@ -90,6 +90,8 @@ const safeUser = (user) => {
         } : null,
         permissions,
         isLockedSeed: user.isLockedSeed,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
     };
 };
 exports.safeUser = safeUser;
@@ -158,12 +160,11 @@ const me = async (req, res) => {
 };
 exports.me = me;
 const requestClientRegistrationOtp = async (req, res) => {
-    const { companyName, companyAddress, companyType, companyTypeOther, companyMarket, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
+    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
     const requiredFields = [
         companyName,
         companyAddress,
         companyType,
-        companyMarket,
         phoneNumber,
         representativeFirstName,
         representativeLastName,
@@ -174,10 +175,6 @@ const requestClientRegistrationOtp = async (req, res) => {
     ];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required fields." });
-    }
-    const normalizedCompanyMarket = String(companyMarket || "").trim().toLowerCase();
-    if (!["local", "international"].includes(normalizedCompanyMarket)) {
-        return res.status(400).json({ success: false, message: "Please select if the company is Local or International." });
     }
     if (password !== confirmPassword) {
         return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
@@ -221,7 +218,7 @@ const requestClientRegistrationOtp = async (req, res) => {
         companyAddress,
         companyType,
         companyTypeOther: companyTypeOther || "",
-        companyMarket: normalizedCompanyMarket,
+        companyMarket: "local",
         phoneNumber,
         representativeFirstName,
         representativeMiddleName: representativeMiddleName || "",
@@ -437,6 +434,34 @@ const resetPassword = async (req, res) => {
     return res.json({ success: true, message: "Password has been reset successfully." });
 };
 exports.resetPassword = resetPassword;
+const resubmitRejectedClient = async (req, res) => {
+    const user = await User_js_1.default.findById(req.user._id);
+    if (!user || user.userType !== "client") return res.status(404).json({ success: false, message: "Client account not found." });
+    if (user.status !== "rejected") return res.status(400).json({ success: false, message: "Only rejected client accounts can be resubmitted." });
+    const fields = ["companyName", "companyAddress", "companyType", "companyTypeOther", "phoneNumber", "representativeFirstName", "representativeMiddleName", "representativeLastName", "representativePosition"];
+    for (const field of fields) {
+        if (req.body[field] !== undefined) user[field] = String(req.body[field] || "").trim();
+    }
+    const uploadedDocs = await uploadRegistrationDocuments({ files: req.files, clientId: user._id });
+    if (uploadedDocs.length) {
+        const replacementTypes = new Set(uploadedDocs.map((doc) => doc.type));
+        user.documents = [...(user.documents || []).filter((doc) => !replacementTypes.has(doc.type)), ...uploadedDocs];
+    }
+    const requiredFields = [user.companyName, user.companyAddress, user.companyType, user.phoneNumber, user.representativeFirstName, user.representativeLastName, user.representativePosition];
+    if (requiredFields.some((value) => !String(value || "").trim())) return res.status(400).json({ success: false, message: "Complete all required company and representative details before resubmitting." });
+    const missingDocuments = requiredDocumentFields.filter((fieldName) => !(user.documents || []).some((doc) => doc.type === fieldName));
+    if (missingDocuments.length) return res.status(400).json({ success: false, message: `Missing required documents: ${missingDocuments.map((field) => documentLabels[field]).join(", ")}.` });
+    user.name = getRepresentativeName(user);
+    user.status = "resubmitted";
+    user.resubmittedAt = new Date();
+    user.rejectionReason = "";
+    await user.save();
+    const payload = (0, exports.safeUser)(user);
+    (0, socket_js_1.emitToAdmins)("client:resubmitted", payload);
+    (0, socket_js_1.emitToUser)(user._id, "client:resubmitted", payload);
+    return res.json({ success: true, message: "Account resubmitted for verification.", user: payload });
+};
+exports.resubmitRejectedClient = resubmitRejectedClient;
 const changePassword = async (req, res) => {
     const { currentPassword, newPassword, confirmPassword } = req.body;
     if (!currentPassword || !newPassword || !confirmPassword) {
