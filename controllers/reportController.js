@@ -225,7 +225,7 @@ const getYardContainerReport = async (req, res) => {
         releaseQuery.releasedAt = dateQuery;
     const [bookings, releaseReports, clientUsers] = await Promise.all([
         Booking_js_1.default.find(query)
-            .select("client containerSize containerLoadStatus rateType shippingLine status assignedArea assignedBlock inDate storageStartDate assignedAt createdAt")
+            .select("client containerSize containerLoadStatus rateType status assignedArea assignedBlock inDate storageStartDate assignedAt createdAt")
             .populate("client", "name companyName email")
             .lean(),
         ReleaseReport_js_1.default.find(releaseQuery)
@@ -238,7 +238,6 @@ const getYardContainerReport = async (req, res) => {
     const empty = emptySizeCounts();
     const laden = emptySizeCounts();
     const international = emptySizeCounts();
-    const gothong = emptySizeCounts();
     let totalTeu = 0;
     let totalFeu = 0;
     const revenueByClient = new Map();
@@ -248,8 +247,6 @@ const getYardContainerReport = async (req, res) => {
         addContainer(loadStatus === "empty" ? empty : laden, size);
         if (normalizeRateType(booking.rateType) === "international")
             addContainer(international, size);
-        if (/gothong/i.test(String(booking.shippingLine || "")))
-            addContainer(gothong, size);
         totalTeu += getTeu(size);
         totalFeu += getFeu(size);
     }
@@ -289,7 +286,6 @@ const getYardContainerReport = async (req, res) => {
             empty,
             laden,
             international,
-            gothong,
             totalTeu: Math.round(totalTeu * 100) / 100,
             totalFeu: Math.round(totalFeu * 100) / 100,
             releasedContainers: releaseReports.length,

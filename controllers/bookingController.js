@@ -17,6 +17,7 @@ const mailer_js_1 = require("../config/mailer.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
+const billingDays_js_1 = require("../utils/billingDays.js");
 const ACTIVE_BOOKING_STATUSES = [
     "approved_area_assigned",
     "gate_in_approved",
@@ -133,26 +134,14 @@ const resolveBookingDateRange = (booking = {}) => {
     const outDate = parseBookingDate(booking.outDate);
     return { inDate, outDate };
 };
-const getDateRangeDays = (startValue, endValue) => {
-    const start = parseBookingDate(startValue);
-    const end = parseBookingDate(endValue);
-    if (!start || !end)
-        return 0;
-    const diffMs = end.getTime() - start.getTime();
-    if (!Number.isFinite(diffMs) || diffMs <= 0)
-        return 0;
-    return Math.max(Math.ceil(diffMs / (24 * 60 * 60 * 1000)), 1);
-};
+const getDateRangeDays = (startValue, endValue) => (0, billingDays_js_1.getCalendarBillingDays)(startValue, endValue);
 const getStorageDays = (booking, asOf = new Date()) => {
     const { inDate, outDate } = resolveBookingDateRange(booking);
     const plannedDays = getDateRangeDays(inDate, outDate);
     if (plannedDays > 0)
         return plannedDays;
     const start = booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt || booking.createdAt || asOf;
-    const diffMs = new Date(asOf).getTime() - new Date(start).getTime();
-    if (!Number.isFinite(diffMs) || diffMs <= 0)
-        return 1;
-    return Math.max(Math.ceil(diffMs / (24 * 60 * 60 * 1000)), 1);
+    return (0, billingDays_js_1.getCalendarBillingDays)(start, asOf) || 1;
 };
 const validateBookingDateRange = ({ inDate, outDate, expectedArrivalDate }) => {
     const parsedIn = parseBookingDate(inDate || expectedArrivalDate);
@@ -207,8 +196,10 @@ const validateGateOutDate = (booking, outDate) => {
     if (!parsedIn) {
         return { valid: false, message: "Booking has no valid In Date. Please ask admin to review the booking." };
     }
-    if (parsedOut.getTime() <= parsedIn.getTime()) {
-        return { valid: false, message: "Date Out must be later than the booking In Date." };
+    const inCalendarDay = (0, billingDays_js_1.getCalendarDayNumber)(parsedIn);
+    const outCalendarDay = (0, billingDays_js_1.getCalendarDayNumber)(parsedOut);
+    if (inCalendarDay === null || outCalendarDay === null || outCalendarDay < inCalendarDay) {
+        return { valid: false, message: "Date Out cannot be before the booking In Date." };
     }
     return { valid: true, inDate: parsedIn, outDate: parsedOut, days: getDateRangeDays(parsedIn, parsedOut) };
 };
@@ -1372,7 +1363,7 @@ const markBookingStored = async (req, res) => {
     const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
     addHistory(booking, {
         remarks: billingResult?.hasMatchedRates
-            ? `${wasAlreadyStored ? "Stored container billing refreshed" : "Container stored in assigned yard location"}. Billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
+            ? `${wasAlreadyStored ? "Stored container billing refreshed" : "Container stored in assigned yard location"}. Billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`
             : "Container stored in the assigned yard location. Configure matching active Lift On, Lift Off, and Storage rates to generate billing line items.",
         changedBy: req.user._id,
     });
@@ -1407,7 +1398,7 @@ const updateBookingBillingOperation = async (req, res) => {
     const rateTypeLabel = booking.rateType === "international" ? "International" : "Local";
     addHistory(booking, {
         remarks: billingResult
-            ? `Billing refreshed using the ${rateTypeLabel} classification selected on the booking. Total: PHP ${billingResult.total.toLocaleString()} for ${billingResult.days} billing day${billingResult.days === 1 ? "" : "s"}.`
+            ? `Billing refreshed using the ${rateTypeLabel} classification selected on the booking. Total: PHP ${billingResult.total.toLocaleString()} for ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`
             : `Billing classification confirmed as ${rateTypeLabel} from the booking. Billing will compute once the container enters the billable workflow.`,
         changedBy: req.user._id,
     });
@@ -1769,7 +1760,7 @@ const requestBookingGateOut = async (req, res) => {
     booking.gateOutRequestedAt = new Date();
     booking.gateOutRequestRemarks = req.body.remarks || "";
     addHistory(booking, {
-        remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. Final billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`,
+        remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. Final billing auto-computed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`,
         changedBy: req.user._id,
     });
     await booking.save();

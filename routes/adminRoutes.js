@@ -41,7 +41,7 @@ router.get("/pre-advice-bookings/:id/congestion-surcharge", (0, authMiddleware_j
 router.patch("/pre-advice-bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
 router.patch("/pre-advice-bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
 router.get("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBooking));
-router.delete("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("bookings", "delete"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBooking));
+router.delete("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("operations", "delete"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBooking));
 router.patch("/bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
 router.patch("/bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
 router.patch("/bookings/:id/gate-in", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateIn));
