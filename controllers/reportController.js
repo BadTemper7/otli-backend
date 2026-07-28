@@ -7,7 +7,6 @@ exports.getOperationsDashboard = exports.getYardContainerReport = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
-const BillingRate_js_1 = __importDefault(require("../models/BillingRate.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
 const ACTIVE_YARD_STATUSES = [
     "approved_area_assigned",
@@ -75,41 +74,6 @@ const getDashboardRange = (periodValue = "daily", now = new Date()) => {
         start = toUtcFromManilaParts(year, month, day);
     }
     return { period, start, end: now };
-};
-const rateMatchesBooking = (rate, booking) => {
-    const size = String(booking.containerSize || "");
-    const type = normalizeKey(booking.containerType);
-    const loadStatus = normalizeKey(booking.containerLoadStatus);
-    const rateSize = String(rate.containerSize || "all");
-    const chargeCode = String(rate.chargeCode || "").toUpperCase();
-    const codedSize = /^(?:STORAGE)_(20|40)(?:_|$)/.exec(chargeCode)?.[1] || "";
-    const effectiveRateSize = codedSize || rateSize;
-    const rateContainerType = normalizeKey(rate.containerType);
-    const rateLoad = normalizeKey(rate.loadStatus);
-    return normalizeRateType(rate.rateType) === normalizeRateType(booking.rateType)
-        && (effectiveRateSize === "all" || effectiveRateSize === size)
-        && (rateContainerType === "all" || rateContainerType === type)
-        && (rateLoad === "all" || rateLoad === loadStatus);
-};
-const getElapsedStorageDays = (booking, now = new Date()) => {
-    const startValue = booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt;
-    if (!startValue)
-        return 0;
-    const start = new Date(startValue);
-    const diffMs = now.getTime() - start.getTime();
-    if (!Number.isFinite(diffMs) || diffMs <= 0)
-        return 0;
-    return Math.max(Math.ceil(diffMs / (24 * 60 * 60 * 1000)), 1);
-};
-const getFreeDaysForBooking = (booking, storageRates) => {
-    const savedStorageItems = (booking.billingLineItems || []).filter((item) => ["storage_day", "per_day"].includes(String(item.unit || "")));
-    if (savedStorageItems.length > 0) {
-        return Math.max(...savedStorageItems.map((item) => Math.max(Number(item.freeDays) || 0, 0)));
-    }
-    const matching = storageRates.filter((rate) => rateMatchesBooking(rate, booking));
-    if (matching.length === 0)
-        return null;
-    return Math.max(...matching.map((rate) => Math.max(Number(rate.freeDays) || 0, 0)));
 };
 const safeReleaseReport = (report) => {
     const client = report.client || {};
@@ -234,16 +198,11 @@ const getOperationsDashboard = async (req, res) => {
     const now = new Date();
     const range = getDashboardRange(req.query.period, now);
     const dateFilter = { $gte: range.start, $lte: range.end };
-    const activeRateQuery = {
-        status: "active",
-        billingScope: "storage",
-        effectiveDate: { $lte: now },
-    };
-    const [receivedCount, releasedCount, currentInventoryBookings, yardBlocks, revenueAggregate, recentAccounts, pendingClients, pendingBookings, gateOutRequests, storageRates] = await Promise.all([
+    const [receivedCount, releasedCount, currentInventoryBookings, yardBlocks, revenueAggregate, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
         Booking_js_1.default.countDocuments({ gateInApprovedAt: dateFilter }),
         ReleaseReport_js_1.default.countDocuments({ releasedAt: dateFilter }),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
-            .select("containerNumber containerSize containerType containerLoadStatus rateType storageStartDate storedAt gateInApprovedAt billingLineItems")
+            .select("containerNumber containerSize status")
             .lean(),
         YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots").lean(),
         ReleaseReport_js_1.default.aggregate([
@@ -254,30 +213,10 @@ const getOperationsDashboard = async (req, res) => {
         User_js_1.default.countDocuments({ userType: "client", status: { $in: ["pending", "resubmitted"] } }),
         Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
         Booking_js_1.default.countDocuments({ status: "gate_out_requested" }),
-        BillingRate_js_1.default.find(activeRateQuery).sort({ effectiveDate: -1, createdAt: -1 }).lean(),
     ]);
-    const latestStorageRates = [];
-    const seenRateKeys = new Set();
-    for (const rate of storageRates) {
-        const key = [
-            normalizeRateType(rate.rateType),
-            String(rate.chargeCode || rate.description || rate._id),
-            String(rate.containerSize || "all"),
-            normalizeKey(rate.containerType),
-            normalizeKey(rate.loadStatus),
-        ].join(":");
-        if (seenRateKeys.has(key))
-            continue;
-        seenRateKeys.add(key);
-        latestStorageRates.push(rate);
-    }
-    let overstayingContainers = 0;
-    for (const booking of currentInventoryBookings) {
-        const storageDays = getElapsedStorageDays(booking, now);
-        const freeDays = getFreeDaysForBooking(booking, latestStorageRates);
-        if (freeDays !== null && storageDays > freeDays)
-            overstayingContainers += 1;
-    }
+    // A container is considered overstaying once its Gate-Out request has been
+    // approved but the physical release has not yet been completed.
+    const overstayingContainers = currentInventoryBookings.filter((booking) => booking.status === "gate_out_approved").length;
     const totalYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.teuSlots) || 0), 0);
     const occupiedYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.occupiedSlots) || 0), 0);
     const availableYardCapacity = Math.max(totalYardCapacity - occupiedYardCapacity, 0);
