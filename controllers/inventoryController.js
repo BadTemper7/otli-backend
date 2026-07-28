@@ -89,6 +89,9 @@ const safeBookingContainer = (booking) => {
         y: 40,
         width: 92,
         height: 46,
+        gateInApprovedAt: doc.gateInApprovedAt,
+        storedAt: doc.storedAt,
+        inventoryEnteredAt: doc.gateInApprovedAt || doc.storedAt || doc.storageStartDate || doc.updatedAt || doc.createdAt,
         storageStartDate: doc.storageStartDate,
         inDate: doc.inDate || doc.expectedArrivalDate,
         outDate: doc.outDate,
@@ -136,6 +139,9 @@ const safeContainer = (container) => {
         y: Number(doc.y) || 40,
         width: Number(doc.width) || 92,
         height: Number(doc.height) || 46,
+        gateInApprovedAt: doc.gateIn?.completedAt || null,
+        storedAt: doc.storageStartDate || null,
+        inventoryEnteredAt: doc.gateIn?.completedAt || doc.storageStartDate || doc.createdAt || doc.updatedAt,
         storageStartDate: doc.storageStartDate,
         containerCondition: doc.containerCondition || "",
         truckPlateNumber: doc.truckPlateNumber || "",
@@ -149,7 +155,7 @@ const safeContainer = (container) => {
 const listInventoryContainers = async (req, res) => {
     const { areaId, status, search } = req.query;
     const query = {};
-    const bookingQuery = { status: { $in: ["gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "completed_gate_out_done"] } };
+    const bookingQuery = { status: { $in: ["gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] } };
     if (status && status !== "all")
         query.status = status;
     if (areaId) {
@@ -182,10 +188,14 @@ const listInventoryContainers = async (req, res) => {
             .populate("client", "name email companyName")
             .populate("assignedArea", "name code")
             .populate("assignedBlock", "name code")
-            .sort({ updatedAt: -1 })
+            .sort({ gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 })
             .limit(300),
     ]);
-    const combined = [...bookingContainers.map(safeBookingContainer), ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" }))].sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+    const combined = [...bookingContainers.map(safeBookingContainer), ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" }))].sort((a, b) => {
+        const bEnteredAt = new Date(b.inventoryEnteredAt || b.gateInApprovedAt || b.storedAt || b.createdAt || 0).getTime();
+        const aEnteredAt = new Date(a.inventoryEnteredAt || a.gateInApprovedAt || a.storedAt || a.createdAt || 0).getTime();
+        return bEnteredAt - aEnteredAt;
+    });
     return res.json({ success: true, containers: combined });
 };
 exports.listInventoryContainers = listInventoryContainers;

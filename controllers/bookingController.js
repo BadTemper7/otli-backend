@@ -1284,12 +1284,9 @@ const approveBookingGateIn = async (req, res) => {
         return res.status(400).json({ success: false, message: "Truck plate number and driver name must be added in the booking before Gate-In." });
     }
     const receivedAt = new Date();
-    booking.status = "stored_in_assigned_area";
+    booking.status = "gate_in_approved";
     booking.gateInApprovedAt = receivedAt;
     booking.gateInApprovedBy = req.user._id;
-    booking.storedAt = receivedAt;
-    booking.storedBy = req.user._id;
-    booking.storageStartDate = receivedAt;
     booking.actualContainerNumber = actualContainerNumber;
     booking.physicalCondition = req.body.physicalCondition || "Good";
     booking.sealNumber = req.body.sealNumber || "";
@@ -1297,11 +1294,8 @@ const approveBookingGateIn = async (req, res) => {
     booking.driverName = booking.driverName || req.body.driverName || "";
     booking.driverLicenseNumber = booking.driverLicenseNumber || req.body.driverLicenseNumber || "";
     booking.inspectionRemarks = req.body.inspectionRemarks || "";
-    const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: receivedAt, persist: true });
     addHistory(booking, {
-        remarks: billingResult.hasMatchedRates
-            ? `Gate-In approved. Container automatically received and stored in the assigned yard location. Billing initialized using ${booking.rateType === "international" ? "International" : "Local"} booking rates at PHP ${billingResult.total.toLocaleString()}.`
-            : "Gate-In approved. Container automatically received and stored in the assigned yard location. Configure matching billing rates to initialize billing.",
+        remarks: "Gate-In approved. Container added to Inventory and is awaiting storage confirmation.",
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1310,17 +1304,16 @@ const approveBookingGateIn = async (req, res) => {
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_in_approved", payload);
-    (0, socket_js_1.emitToAdmins)("booking:stored", payload);
-    (0, socket_js_1.emitToAdmins)("storage:updated", payload);
+    (0, socket_js_1.emitToAdmins)("inventory:container_created", payload);
     (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_in_approved", payload);
-    await notifyClient(booking, "Container received and stored", "Your container passed Gate-In inspection and was automatically placed in its assigned yard location.", [
+    await notifyClient(booking, "Gate-In approved", "Your container passed Gate-In inspection and is now listed in Inventory for storage confirmation.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Truck Plate", value: booking.truckPlateNumber },
         { label: "Assigned Slot", value: booking.assignedSlotNumber },
         { label: "Rate Classification", value: booking.rateType === "international" ? "International" : "Local" },
     ]);
-    return res.json({ success: true, message: "Gate-In approved. Container received and stored automatically.", booking: payload });
+    return res.json({ success: true, message: "Gate-In approved. Container added to Inventory.", booking: payload });
 };
 exports.approveBookingGateIn = approveBookingGateIn;
 const rejectBookingGateIn = async (req, res) => {
