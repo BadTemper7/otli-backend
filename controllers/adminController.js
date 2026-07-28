@@ -51,7 +51,8 @@ const createAdminUser = async (req, res) => {
     if (exists) {
         return res.status(409).json({ success: false, message: "Email already exists." });
     }
-    const selectedRole = role || "admin";
+    const allowedRoles = ["super_admin", "admin", "staff"];
+    const selectedRole = allowedRoles.includes(role) ? role : "staff";
     const admin = await User_js_1.default.create({
         name,
         email: email.toLowerCase().trim(),
@@ -83,7 +84,13 @@ const updateUser = async (req, res) => {
         user.name = name ?? user.name;
         user.email = email ? email.toLowerCase().trim() : user.email;
         user.status = status ?? user.status;
-        user.role = role ?? user.role;
+        const allowedRoles = ["super_admin", "admin", "staff"];
+        if (role !== undefined) {
+            if (!allowedRoles.includes(role)) {
+                return res.status(400).json({ success: false, message: "Invalid admin role." });
+            }
+            user.role = role;
+        }
         if (user.userType === "admin") {
             user.permissions = ["super_admin", "admin"].includes(user.role) ? (0, permissions_js_1.getAllAccessPermissions)() : (0, permissions_js_1.normalizePermissions)(permissions || user.permissions);
         }
@@ -108,6 +115,9 @@ const deleteUser = async (req, res) => {
     const user = await User_js_1.default.findById(req.params.id);
     if (!user) {
         return res.status(404).json({ success: false, message: "User not found." });
+    }
+    if (String(user._id) === String(req.user?._id)) {
+        return res.status(400).json({ success: false, message: "You cannot delete your own account." });
     }
     if (user.isLockedSeed) {
         return res.status(403).json({ success: false, message: "The seeded Super Admin account cannot be deleted." });

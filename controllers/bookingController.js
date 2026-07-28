@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -1078,6 +1078,39 @@ const getAdminBooking = async (req, res) => {
     return res.json({ success: true, booking: safeBooking(booking) });
 };
 exports.getAdminBooking = getAdminBooking;
+const deleteBooking = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+
+    const previousBlockId = booking.assignedBlock ? String(booking.assignedBlock) : "";
+    const clientId = booking.client;
+    const bookingReference = booking.bookingReference;
+    const fileReferences = [...(booking.documents || []), ...(booking.paymentProofs || [])]
+        .map((document) => document.publicId || document.secureUrl || document.url)
+        .filter(Boolean);
+
+    await ReleaseReport_js_1.default.deleteMany({ booking: booking._id });
+    await Booking_js_1.default.deleteOne({ _id: booking._id });
+
+    await Promise.allSettled(fileReferences.map((fileReference) => (0, localFileStorage_js_1.deleteLocalFile)(fileReference)));
+    if (previousBlockId)
+        await recalculateBlockOccupancy(previousBlockId);
+
+    const payload = {
+        id: String(booking._id),
+        bookingReference,
+        containerNumber: booking.containerNumber,
+        previousBlockId,
+    };
+    (0, socket_js_1.emitToAdmins)("booking:deleted", payload);
+    (0, socket_js_1.emitToAdmins)("yard:slot_released", payload);
+    if (clientId)
+        (0, socket_js_1.emitToUser)(clientId, "booking:deleted", payload);
+
+    return res.json({ success: true, message: `Booking ${bookingReference} deleted successfully.`, booking: payload });
+};
+exports.deleteBooking = deleteBooking;
 const approveBooking = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)

@@ -66,6 +66,8 @@ const userSchema = new mongoose_1.default.Schema({
     permissions: {
         dashboard: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
         accounts: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
+        operations: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
+        yard: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
         clients: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
         yardSetup: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
         inventory: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
@@ -95,9 +97,13 @@ const userSchema = new mongoose_1.default.Schema({
     passwordResetLastSentAt: { type: Date, default: null },
 }, { timestamps: true });
 userSchema.pre("validate", function () {
-    if (!this.permissions || Object.keys(this.permissions).length === 0) {
-        this.permissions = (0, permissions_js_1.getEmptyPermissions)();
+    if (this.userType !== "admin")
+        return;
+    if (["super_admin", "admin"].includes(this.role)) {
+        this.permissions = (0, permissions_js_1.getAllAccessPermissions)();
+        return;
     }
+    this.permissions = (0, permissions_js_1.normalizePermissions)(this.permissions || {});
 });
 userSchema.pre("save", async function () {
     if (!this.isModified("password"))

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.requirePermission = exports.superAdminOnly = exports.verifiedClientOnly = exports.clientOnly = exports.adminOnly = exports.protect = exports.CLIENT_VERIFIED_STATUSES = exports.CLIENT_LOGIN_ALLOWED_STATUSES = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_js_1 = __importDefault(require("../models/User.js"));
+const permissions_js_1 = require("../utils/permissions.js");
 exports.CLIENT_LOGIN_ALLOWED_STATUSES = ["active", "verified", "pending", "resubmitted", "rejected"];
 exports.CLIENT_VERIFIED_STATUSES = ["active", "verified"];
 const canUseToken = (user) => {
@@ -78,15 +79,19 @@ const superAdminOnly = (req, res, next) => {
 exports.superAdminOnly = superAdminOnly;
 const requirePermission = (moduleName, action = "view") => {
     return (req, res, next) => {
-        // Super Admin and Admin are operational roles.
-        // Staff accounts still use the per-module permission matrix.
+        // Super Admin has unrestricted access. Admin has full operational
+        // access, while account and role administration is protected by
+        // superAdminOnly on the specific routes.
         if (["super_admin", "admin"].includes(req.user?.role))
             return next();
-        const allowed = Boolean(req.user?.permissions?.[moduleName]?.[action]);
+
+        const permissionModule = (0, permissions_js_1.resolvePermissionModule)(moduleName);
+        const normalizedPermissions = (0, permissions_js_1.normalizePermissions)(req.user?.permissions || {});
+        const allowed = Boolean(normalizedPermissions?.[permissionModule]?.[action]);
         if (!allowed) {
             return res.status(403).json({
                 success: false,
-                message: `Missing ${action} permission for ${moduleName}.`,
+                message: `Missing ${action} permission for ${permissionModule}.`,
             });
         }
         next();
