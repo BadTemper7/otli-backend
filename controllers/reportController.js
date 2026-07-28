@@ -75,6 +75,113 @@ const getDashboardRange = (periodValue = "daily", now = new Date()) => {
     }
     return { period, start, end: now };
 };
+const getManilaParts = (date) => {
+    const manilaDate = new Date(date.getTime() + MANILA_OFFSET_MS);
+    return {
+        year: manilaDate.getUTCFullYear(),
+        month: manilaDate.getUTCMonth(),
+        day: manilaDate.getUTCDate(),
+        hour: manilaDate.getUTCHours(),
+    };
+};
+const formatBucketLabel = (date, options) => new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    ...options,
+}).format(date);
+const getDashboardBuckets = (range) => {
+    const buckets = [];
+    const nowParts = getManilaParts(range.end);
+    const startParts = getManilaParts(range.start);
+    if (range.period === "daily") {
+        for (let hour = 0; hour <= nowParts.hour; hour += 1) {
+            const start = toUtcFromManilaParts(nowParts.year, nowParts.month, nowParts.day, hour);
+            const naturalEnd = toUtcFromManilaParts(nowParts.year, nowParts.month, nowParts.day, hour, 59, 59, 999);
+            const end = naturalEnd > range.end ? range.end : naturalEnd;
+            buckets.push({
+                key: `${nowParts.year}-${nowParts.month + 1}-${nowParts.day}-${hour}`,
+                label: formatBucketLabel(start, { hour: "numeric" }),
+                start,
+                end,
+            });
+        }
+        return { granularity: "hour", buckets };
+    }
+    if (range.period === "yearly") {
+        for (let month = 0; month <= nowParts.month; month += 1) {
+            const start = toUtcFromManilaParts(nowParts.year, month, 1);
+            const naturalEnd = toUtcFromManilaParts(nowParts.year, month + 1, 1, 0, 0, 0, 0);
+            const endOfMonth = new Date(naturalEnd.getTime() - 1);
+            const end = endOfMonth > range.end ? range.end : endOfMonth;
+            buckets.push({
+                key: `${nowParts.year}-${month + 1}`,
+                label: formatBucketLabel(start, { month: "short" }),
+                start,
+                end,
+            });
+        }
+        return { granularity: "month", buckets };
+    }
+    let cursor = toUtcFromManilaParts(startParts.year, startParts.month, startParts.day);
+    while (cursor <= range.end) {
+        const cursorParts = getManilaParts(cursor);
+        const nextDay = toUtcFromManilaParts(cursorParts.year, cursorParts.month, cursorParts.day + 1);
+        const naturalEnd = new Date(nextDay.getTime() - 1);
+        const end = naturalEnd > range.end ? range.end : naturalEnd;
+        buckets.push({
+            key: `${cursorParts.year}-${cursorParts.month + 1}-${cursorParts.day}`,
+            label: range.period === "weekly"
+                ? formatBucketLabel(cursor, { weekday: "short", day: "numeric" })
+                : formatBucketLabel(cursor, { month: "short", day: "numeric" }),
+            start: cursor,
+            end,
+        });
+        cursor = nextDay;
+    }
+    return { granularity: "day", buckets };
+};
+const getBookingEntryDate = (booking) => {
+    const value = booking.gateInApprovedAt || booking.storageStartDate || booking.storedAt || booking.inDate;
+    return value ? new Date(value) : null;
+};
+const getDashboardTrend = ({ range, bookings, releaseReports, totalYardCapacity }) => {
+    const bucketConfig = getDashboardBuckets(range);
+    const series = bucketConfig.buckets.map((bucket) => {
+        let containersReceived = 0;
+        let occupiedSlots = 0;
+        let containersReleased = 0;
+        let revenue = 0;
+        for (const booking of bookings) {
+            const entryAt = getBookingEntryDate(booking);
+            const releasedAt = booking.releasedAt ? new Date(booking.releasedAt) : null;
+            if (entryAt && entryAt >= bucket.start && entryAt <= bucket.end)
+                containersReceived += 1;
+            if (entryAt && entryAt <= bucket.end && (!releasedAt || releasedAt > bucket.end))
+                occupiedSlots += getTeu(booking.containerSize);
+        }
+        for (const report of releaseReports) {
+            const releasedAt = report.releasedAt ? new Date(report.releasedAt) : null;
+            if (releasedAt && releasedAt >= bucket.start && releasedAt <= bucket.end) {
+                containersReleased += 1;
+                revenue += Number(report.revenueTotal) || 0;
+            }
+        }
+        const occupancyRate = totalYardCapacity > 0
+            ? Math.round((occupiedSlots / totalYardCapacity) * 10000) / 100
+            : 0;
+        return {
+            key: bucket.key,
+            label: bucket.label,
+            start: bucket.start,
+            end: bucket.end,
+            containersReceived,
+            containersReleased,
+            occupiedSlots,
+            occupancyRate,
+            revenue: roundMoney(revenue),
+        };
+    });
+    return { granularity: bucketConfig.granularity, series };
+};
 const safeReleaseReport = (report) => {
     const client = report.client || {};
     return {
@@ -197,18 +304,28 @@ exports.getYardContainerReport = getYardContainerReport;
 const getOperationsDashboard = async (req, res) => {
     const now = new Date();
     const range = getDashboardRange(req.query.period, now);
-    const dateFilter = { $gte: range.start, $lte: range.end };
-    const [receivedCount, releasedCount, currentInventoryBookings, yardBlocks, revenueAggregate, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
-        Booking_js_1.default.countDocuments({ gateInApprovedAt: dateFilter }),
-        ReleaseReport_js_1.default.countDocuments({ releasedAt: dateFilter }),
+    const [dashboardBookings, periodReleaseReports, currentInventoryBookings, yardBlocks, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
+        Booking_js_1.default.find({
+            $and: [
+                {
+                    $or: [
+                        { gateInApprovedAt: { $lte: range.end } },
+                        { storageStartDate: { $lte: range.end } },
+                        { storedAt: { $lte: range.end } },
+                        { inDate: { $lte: range.end } },
+                    ],
+                },
+                { $or: [{ releasedAt: null }, { releasedAt: { $gt: range.start } }] },
+            ],
+        }).select("containerSize gateInApprovedAt storageStartDate storedAt inDate releasedAt").lean(),
+        ReleaseReport_js_1.default.find({ releasedAt: { $gte: range.start, $lte: range.end } })
+            .select("releasedAt revenueTotal billingSubtotal vatAmount")
+            .sort({ releasedAt: 1 })
+            .lean(),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
             .select("containerNumber containerSize status")
             .lean(),
         YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots").lean(),
-        ReleaseReport_js_1.default.aggregate([
-            { $match: { releasedAt: dateFilter } },
-            { $group: { _id: null, revenue: { $sum: "$revenueTotal" }, subtotal: { $sum: "$billingSubtotal" }, vat: { $sum: "$vatAmount" } } },
-        ]),
         User_js_1.default.find().select("name email userType role status companyName createdAt").sort({ createdAt: -1 }).limit(10).lean(),
         User_js_1.default.countDocuments({ userType: "client", status: { $in: ["pending", "resubmitted"] } }),
         Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
@@ -220,24 +337,35 @@ const getOperationsDashboard = async (req, res) => {
     const totalYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.teuSlots) || 0), 0);
     const occupiedYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.occupiedSlots) || 0), 0);
     const availableYardCapacity = Math.max(totalYardCapacity - occupiedYardCapacity, 0);
-    const occupancyRate = totalYardCapacity > 0 ? Math.round((occupiedYardCapacity / totalYardCapacity) * 10000) / 100 : 0;
-    const revenue = revenueAggregate[0] || {};
+    const currentOccupancyRate = totalYardCapacity > 0 ? Math.round((occupiedYardCapacity / totalYardCapacity) * 10000) / 100 : 0;
+    const trend = getDashboardTrend({ range, bookings: dashboardBookings, releaseReports: periodReleaseReports, totalYardCapacity });
+    const containersReceived = trend.series.reduce((sum, point) => sum + point.containersReceived, 0);
+    const containersReleased = trend.series.reduce((sum, point) => sum + point.containersReleased, 0);
+    const revenue = roundMoney(trend.series.reduce((sum, point) => sum + point.revenue, 0));
+    const revenueSubtotal = roundMoney(periodReleaseReports.reduce((sum, report) => sum + (Number(report.billingSubtotal) || 0), 0));
+    const revenueVat = roundMoney(periodReleaseReports.reduce((sum, report) => sum + (Number(report.vatAmount) || 0), 0));
+    const averageOccupancyRate = trend.series.length
+        ? Math.round((trend.series.reduce((sum, point) => sum + point.occupancyRate, 0) / trend.series.length) * 100) / 100
+        : 0;
     return res.json({
         success: true,
         generatedAt: now,
         period: range.period,
         range: { start: range.start, end: range.end },
+        trend,
         metrics: {
-            containersReceived: receivedCount,
-            containersReleased: releasedCount,
+            containersReceived,
+            containersReleased,
             currentInventory: currentInventoryBookings.length,
             availableYardCapacity,
             totalYardCapacity,
             occupiedYardCapacity,
-            occupancyRate,
-            revenue: roundMoney(revenue.revenue),
-            revenueSubtotal: roundMoney(revenue.subtotal),
-            revenueVat: roundMoney(revenue.vat),
+            occupancyRate: averageOccupancyRate,
+            averageOccupancyRate,
+            currentOccupancyRate,
+            revenue,
+            revenueSubtotal,
+            revenueVat,
             overstayingContainers,
         },
         bookingSummary: {
