@@ -11,6 +11,7 @@ const YardArea_js_1 = __importDefault(require("../models/YardArea.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const BillingRate_js_1 = __importDefault(require("../models/BillingRate.js"));
 const PaymentType_js_1 = __importDefault(require("../models/PaymentType.js"));
+const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
@@ -461,6 +462,9 @@ const safeBooking = (booking) => {
         gateOutRemarks: doc.gateOutRemarks || "",
         releasedAt: doc.releasedAt,
         releaseRemarks: doc.releaseRemarks || "",
+        releaseReport: doc.releaseReport ? String(doc.releaseReport?._id || doc.releaseReport) : "",
+        reportGeneratedAt: doc.reportGeneratedAt,
+        revenueRecordedAt: doc.revenueRecordedAt,
         statusHistory: doc.statusHistory || [],
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
@@ -839,12 +843,15 @@ const handleValidationError = (error, res) => {
 };
 const createClientBooking = async (req, res) => {
     const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
-    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
+    const requiredFields = [containerNumber, containerSize, containerType, rateType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields." });
     }
     if (![20, 40].includes(Number(containerSize))) {
         return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
+    }
+    if (!["local", "international"].includes(String(rateType || "").trim().toLowerCase())) {
+        return res.status(400).json({ success: false, message: "Select whether this booking is Local or International." });
     }
     if (!Number.isFinite(Number(weight)) || Number(weight) <= 0) {
         return res.status(400).json({ success: false, message: "Container weight is required and must be greater than zero." });
@@ -945,12 +952,15 @@ const resubmitClientBooking = async (req, res) => {
         return res.status(400).json({ success: false, message: "Only rejected bookings can be resubmitted." });
     }
     const { containerNumber, containerSize, containerType, containerLoadStatus, serviceType, rateType, shippingLine, truckPlateNumber, driverName, driverLicenseNumber, blNumber, vesselVoyage, cargoDescription, weight, expectedArrivalDate, inDate, outDate, clientRemarks, } = req.body;
-    const requiredFields = [containerNumber, containerSize, containerType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
+    const requiredFields = [containerNumber, containerSize, containerType, rateType, shippingLine, inDate || expectedArrivalDate, truckPlateNumber, driverName, weight];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required booking fields before resubmitting." });
     }
     if (![20, 40].includes(Number(containerSize))) {
         return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
+    }
+    if (!["local", "international"].includes(String(rateType || "").trim().toLowerCase())) {
+        return res.status(400).json({ success: false, message: "Select whether this booking is Local or International." });
     }
     if (!Number.isFinite(Number(weight)) || Number(weight) <= 0) {
         return res.status(400).json({ success: false, message: "Container weight is required and must be greater than zero." });
@@ -1240,9 +1250,13 @@ const approveBookingGateIn = async (req, res) => {
     if (!booking.truckPlateNumber || !booking.driverName) {
         return res.status(400).json({ success: false, message: "Truck plate number and driver name must be added in the booking before Gate-In." });
     }
-    booking.status = "gate_in_approved";
-    booking.gateInApprovedAt = new Date();
+    const receivedAt = new Date();
+    booking.status = "stored_in_assigned_area";
+    booking.gateInApprovedAt = receivedAt;
     booking.gateInApprovedBy = req.user._id;
+    booking.storedAt = receivedAt;
+    booking.storedBy = req.user._id;
+    booking.storageStartDate = receivedAt;
     booking.actualContainerNumber = actualContainerNumber;
     booking.physicalCondition = req.body.physicalCondition || "Good";
     booking.sealNumber = req.body.sealNumber || "";
@@ -1250,19 +1264,30 @@ const approveBookingGateIn = async (req, res) => {
     booking.driverName = booking.driverName || req.body.driverName || "";
     booking.driverLicenseNumber = booking.driverLicenseNumber || req.body.driverLicenseNumber || "";
     booking.inspectionRemarks = req.body.inspectionRemarks || "";
-    addHistory(booking, { remarks: "Gate-In approved after inspection.", changedBy: req.user._id });
+    const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: receivedAt, persist: true });
+    addHistory(booking, {
+        remarks: billingResult.hasMatchedRates
+            ? `Gate-In approved. Container automatically received and stored in the assigned yard location. Billing initialized using ${booking.rateType === "international" ? "International" : "Local"} booking rates at PHP ${billingResult.total.toLocaleString()}.`
+            : "Gate-In approved. Container automatically received and stored in the assigned yard location. Configure matching billing rates to initialize billing.",
+        changedBy: req.user._id,
+    });
     await booking.save();
     await booking.populate("client", "name email companyName phoneNumber");
     await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_in_approved", payload);
+    (0, socket_js_1.emitToAdmins)("booking:stored", payload);
+    (0, socket_js_1.emitToAdmins)("storage:updated", payload);
+    (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_in_approved", payload);
-    await notifyClient(booking, "Gate-In approved", "Your container has entered the yard gate and passed inspection.", [
+    await notifyClient(booking, "Container received and stored", "Your container passed Gate-In inspection and was automatically placed in its assigned yard location.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Truck Plate", value: booking.truckPlateNumber },
+        { label: "Assigned Slot", value: booking.assignedSlotNumber },
+        { label: "Rate Classification", value: booking.rateType === "international" ? "International" : "Local" },
     ]);
-    return res.json({ success: true, message: "Gate-In approved.", booking: payload });
+    return res.json({ success: true, message: "Gate-In approved. Container received and stored automatically.", booking: payload });
 };
 exports.approveBookingGateIn = approveBookingGateIn;
 const rejectBookingGateIn = async (req, res) => {
@@ -1347,20 +1372,17 @@ const updateBookingBillingOperation = async (req, res) => {
     if (!booking)
         return res.status(404).json({ success: false, message: "Booking not found." });
     if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
-        return res.status(400).json({ success: false, message: "Billing operation can no longer be changed after payment is submitted or approved." });
+        return res.status(400).json({ success: false, message: "Billing can no longer be changed after payment is submitted or approved." });
     }
-    const serviceType = normalizeBookingServiceType(req.body.serviceType);
-    const rateType = normalizeRateType(req.body.rateType ?? booking.rateType);
-    booking.serviceType = serviceType;
-    booking.rateType = rateType;
+    booking.serviceType = normalizeBookingServiceType(booking.serviceType);
+    booking.rateType = normalizeRateType(booking.rateType);
     const shouldRecompute = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status);
     const billingResult = shouldRecompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
-    const serviceLabel = serviceType === "stripping_stuffing_mano" ? "Stripping / Stuffing with Mano" : "Container Yard Operation";
-    const rateTypeLabel = rateType === "international" ? "International" : "Local";
+    const rateTypeLabel = booking.rateType === "international" ? "International" : "Local";
     addHistory(booking, {
         remarks: billingResult
-            ? `Billing operation set to ${serviceLabel} using ${rateTypeLabel} rates. Billing recomputed at PHP ${billingResult.total.toLocaleString()} using ${billingResult.days} storage day${billingResult.days === 1 ? "" : "s"}.`
-            : `Billing operation set to ${serviceLabel} using ${rateTypeLabel} rates. Billing will compute after the container is marked stored.`,
+            ? `Billing refreshed using the ${rateTypeLabel} classification selected on the booking. Total: PHP ${billingResult.total.toLocaleString()} for ${billingResult.days} billing day${billingResult.days === 1 ? "" : "s"}.`
+            : `Billing classification confirmed as ${rateTypeLabel} from the booking. Billing will compute once the container enters the billable workflow.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1370,7 +1392,7 @@ const updateBookingBillingOperation = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:billing_operation_updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:billing_operation_updated", payload);
-    return res.json({ success: true, message: billingResult ? "Billing operation updated and bill recomputed." : "Billing operation updated.", booking: payload });
+    return res.json({ success: true, message: billingResult ? `Billing refreshed using ${rateTypeLabel} rates from the booking.` : `Billing will use ${rateTypeLabel} rates from the booking.`, booking: payload });
 };
 exports.updateBookingBillingOperation = updateBookingBillingOperation;
 const getBookingCongestionSurchargeOption = async (req, res) => {
@@ -1777,35 +1799,96 @@ const completeBookingGateOut = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
         return res.status(404).json({ success: false, message: "Booking not found." });
-    if (booking.status !== "gate_out_approved") {
+    if (!["gate_out_approved", "completed_gate_out_done"].includes(booking.status)) {
         return res.status(400).json({ success: false, message: "Only approved gate-out bookings can be completed." });
+    }
+    if (booking.billingStatus !== "paid_approved") {
+        return res.status(403).json({ success: false, message: "Payment must be paid / approved before release completion." });
     }
     const actualContainerNumber = normalizeContainerNumber(req.body.actualContainerNumber || booking.containerNumber);
     if (actualContainerNumber !== booking.containerNumber) {
         return res.status(400).json({ success: false, message: "Final container number must match the booking." });
     }
+    const wasAlreadyCompleted = booking.status === "completed_gate_out_done";
     const previousBlockId = booking.assignedBlock ? String(booking.assignedBlock) : "";
+    const releasedAt = booking.releasedAt || new Date();
+    const billingResult = {
+        days: Number(booking.billingDays) || 0,
+        subtotal: Number(booking.billingSubtotal) || 0,
+        vatRate: Number.isFinite(Number(booking.vatRate)) ? Number(booking.vatRate) : 0,
+        vatAmount: Number(booking.vatAmount) || 0,
+        total: Number(booking.billingTotal || booking.paymentAmount) || 0,
+    };
     booking.status = "completed_gate_out_done";
-    booking.releasedAt = new Date();
-    booking.releasedBy = req.user._id;
-    booking.releaseRemarks = req.body.remarks || "";
-    addHistory(booking, { remarks: "Container released and booking completed.", changedBy: req.user._id });
+    booking.releasedAt = releasedAt;
+    booking.releasedBy = booking.releasedBy || req.user._id;
+    booking.releaseRemarks = req.body.remarks || booking.releaseRemarks || "";
+    if (!wasAlreadyCompleted) {
+        addHistory(booking, { remarks: `Container released, final report generated, and PHP ${billingResult.total.toLocaleString()} revenue recorded.`, changedBy: req.user._id });
+    }
     await booking.save();
-    if (previousBlockId)
+    const reportNumber = `REL-${booking.bookingReference}`;
+    const releaseReport = await ReleaseReport_js_1.default.findOneAndUpdate({ booking: booking._id }, {
+        $set: {
+            reportNumber,
+            client: booking.client,
+            bookingReference: booking.bookingReference,
+            bookingNumber: booking.bookingNumber || "",
+            containerNumber: booking.containerNumber,
+            containerSize: booking.containerSize,
+            containerType: booking.containerType || "",
+            containerLoadStatus: booking.containerLoadStatus || "",
+            rateType: normalizeRateType(booking.rateType),
+            serviceType: booking.serviceType || "container_yard",
+            shippingLine: booking.shippingLine || "",
+            gateInAt: booking.gateInApprovedAt || booking.storedAt || null,
+            storageStartDate: booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt || null,
+            releasedAt,
+            billingDays: booking.billingDays || billingResult.days || 0,
+            billingSubtotal: booking.billingSubtotal || billingResult.subtotal || 0,
+            vatRate: Number.isFinite(Number(booking.vatRate)) ? Number(booking.vatRate) : billingResult.vatRate,
+            vatAmount: booking.vatAmount || billingResult.vatAmount || 0,
+            revenueTotal: booking.billingTotal || billingResult.total || 0,
+            paymentReferenceNumber: booking.paymentReferenceNumber || "",
+            paymentDate: booking.paymentDate || booking.paymentReviewedAt || booking.paymentSubmittedAt || null,
+            paymentStatus: booking.billingStatus,
+            generatedAt: new Date(),
+            generatedBy: req.user._id,
+        },
+    }, { new: true, upsert: true, setDefaultsOnInsert: true });
+    booking.releaseReport = releaseReport._id;
+    booking.reportGeneratedAt = releaseReport.generatedAt;
+    booking.revenueRecordedAt = releaseReport.generatedAt;
+    await booking.save();
+    if (previousBlockId && !wasAlreadyCompleted)
         await recalculateBlockOccupancy(previousBlockId);
     await booking.populate("client", "name email companyName phoneNumber");
     await booking.populate("assignedArea", "name code isCongestionArea");
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:completed", payload);
-    (0, socket_js_1.emitToAdmins)("yard:slot_released", { ...payload, previousBlockId });
-    (0, socket_js_1.emitToAdmins)("storage:updated", payload);
-    (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
-    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:completed", payload);
-    await notifyClient(booking, "Container released", "Your container has successfully left the yard. The booking is now completed.", [
-        { label: "Container", value: booking.containerNumber },
-    ]);
-    return res.json({ success: true, message: "Gate-out completed and booking marked as done.", booking: payload });
+    (0, socket_js_1.emitToAdmins)("report:generated", { booking: payload, reportId: String(releaseReport._id), reportNumber, revenue: releaseReport.revenueTotal });
+    if (!wasAlreadyCompleted) {
+        (0, socket_js_1.emitToAdmins)("yard:slot_released", { ...payload, previousBlockId });
+        (0, socket_js_1.emitToAdmins)("storage:updated", payload);
+        (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
+        (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:completed", payload);
+        await notifyClient(booking, "Container released", "Your container has successfully left the yard. The release report was generated and the booking is now completed.", [
+            { label: "Container", value: booking.containerNumber },
+            { label: "Release Report", value: reportNumber },
+        ]);
+    }
+    return res.json({
+        success: true,
+        message: wasAlreadyCompleted ? "Release report and revenue record refreshed." : "Gate-out completed. Release report generated and revenue recorded.",
+        booking: payload,
+        releaseReport: {
+            id: String(releaseReport._id),
+            reportNumber: releaseReport.reportNumber,
+            generatedAt: releaseReport.generatedAt,
+            revenueTotal: Number(releaseReport.revenueTotal) || 0,
+        },
+    });
 };
 exports.completeBookingGateOut = completeBookingGateOut;
 const relocateBooking = async (req, res) => {

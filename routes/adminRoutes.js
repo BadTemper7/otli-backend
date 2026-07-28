@@ -17,6 +17,7 @@ const uploadMiddleware_js_1 = require("../middleware/uploadMiddleware.js");
 const asyncHandler_js_1 = __importDefault(require("../utils/asyncHandler.js"));
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.adminOnly);
+router.get("/dashboard", (0, authMiddleware_js_1.requirePermission)("dashboard", "view"), (0, asyncHandler_js_1.default)(reportController_js_1.getOperationsDashboard));
 router.get("/users", (0, authMiddleware_js_1.requirePermission)("userManagement", "view"), (0, asyncHandler_js_1.default)(adminController_js_1.listUsers));
 router.get("/client-registrations", (0, authMiddleware_js_1.requirePermission)("clientVerification", "view"), (0, asyncHandler_js_1.default)(adminController_js_1.listClients));
 router.get("/users/:id", (0, authMiddleware_js_1.requirePermission)("userManagement", "view"), (0, asyncHandler_js_1.default)(adminController_js_1.getUserById));

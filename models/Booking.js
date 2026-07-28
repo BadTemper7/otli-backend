@@ -160,6 +160,9 @@ const bookingSchema = new mongoose_1.default.Schema({
     releasedAt: { type: Date, default: null },
     releasedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     releaseRemarks: { type: String, default: "", trim: true },
+    releaseReport: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "ReleaseReport", default: null, index: true },
+    reportGeneratedAt: { type: Date, default: null, index: true },
+    revenueRecordedAt: { type: Date, default: null, index: true },
     statusHistory: { type: [statusHistorySchema], default: [] },
 }, { timestamps: true });
 bookingSchema.index({ assignedBlock: 1, assignedBay: 1, assignedRow: 1, assignedTier: 1, status: 1 });
