@@ -4,9 +4,16 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const DOCUMENTS_ROOT = path.resolve(
-  process.env.DOCUMENTS_DIR || path.join(process.cwd(), "documents"),
-);
+// Always resolve the default documents directory from the server project root.
+// process.cwd() is unreliable in PM2, Hostinger, Passenger, systemd, and panel-based deployments.
+const SERVER_ROOT = path.resolve(__dirname, "..");
+const configuredDocumentsDir = String(process.env.DOCUMENTS_DIR || "").trim();
+
+const DOCUMENTS_ROOT = configuredDocumentsDir
+  ? path.isAbsolute(configuredDocumentsDir)
+    ? path.normalize(configuredDocumentsDir)
+    : path.resolve(SERVER_ROOT, configuredDocumentsDir)
+  : path.join(SERVER_ROOT, "documents");
 
 const sanitizeSegment = (value, fallback = "client") => {
   const cleaned = String(value || "")
@@ -40,7 +47,32 @@ const sanitizeExtension = (originalName = "", mimeType = "") => {
 
 const ensureDocumentsRoot = async () => {
   await fs.promises.mkdir(DOCUMENTS_ROOT, { recursive: true });
+  await fs.promises.access(DOCUMENTS_ROOT, fs.constants.R_OK | fs.constants.W_OK);
+
+  const stats = await fs.promises.stat(DOCUMENTS_ROOT);
+  if (!stats.isDirectory()) {
+    throw new Error(`Configured documents path is not a directory: ${DOCUMENTS_ROOT}`);
+  }
+
   return DOCUMENTS_ROOT;
+};
+
+const getDocumentsStorageStatus = async () => {
+  try {
+    await ensureDocumentsRoot();
+    return {
+      ready: true,
+      directoryName: path.basename(DOCUMENTS_ROOT),
+      configuredByEnvironment: Boolean(configuredDocumentsDir),
+    };
+  } catch (error) {
+    return {
+      ready: false,
+      directoryName: path.basename(DOCUMENTS_ROOT),
+      configuredByEnvironment: Boolean(configuredDocumentsDir),
+      error: error.message,
+    };
+  }
 };
 
 const getClientFolderName = (client) => {
@@ -65,7 +97,7 @@ const saveUploadedFile = async ({
   category = "document",
   prefix = "file",
 }) => {
-  if (!file?.buffer) {
+  if (!file?.buffer || !Buffer.isBuffer(file.buffer)) {
     throw new Error("Uploaded file buffer is missing.");
   }
 
@@ -74,10 +106,14 @@ const saveUploadedFile = async ({
   const clientFolder = getClientFolderName(clientId || clientName);
   const destinationFolder = path.join(DOCUMENTS_ROOT, clientFolder);
   await fs.promises.mkdir(destinationFolder, { recursive: true });
+  await fs.promises.access(destinationFolder, fs.constants.W_OK);
 
   const extension = sanitizeExtension(file.originalname, file.mimetype);
   const originalBase = sanitizeSegment(
-    path.basename(String(file.originalname || "file"), path.extname(String(file.originalname || ""))),
+    path.basename(
+      String(file.originalname || "file"),
+      path.extname(String(file.originalname || "")),
+    ),
     "file",
   ).slice(0, 50);
   const safeCategory = sanitizeSegment(category, "document");
@@ -88,11 +124,22 @@ const saveUploadedFile = async ({
 
   await fs.promises.writeFile(absolutePath, file.buffer, { flag: "wx" });
 
+  // Verify the file was physically written before storing its reference in MongoDB.
+  const writtenFile = await fs.promises.stat(absolutePath);
+  if (!writtenFile.isFile() || writtenFile.size !== file.buffer.length) {
+    await fs.promises.unlink(absolutePath).catch(() => undefined);
+    throw new Error("The uploaded document could not be verified after saving.");
+  }
+
   const publicId = `${clientFolder}/${storedFileName}`;
   const url = `/documents/${publicId
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/")}`;
+
+  if (String(process.env.LOG_FILE_UPLOADS || "").toLowerCase() === "true") {
+    console.log(`[documents] Saved ${file.originalname || storedFileName} -> ${absolutePath}`);
+  }
 
   return {
     url,
@@ -101,6 +148,7 @@ const saveUploadedFile = async ({
     resourceType: "local",
     absolutePath,
     storedFileName,
+    sizeBytes: writtenFile.size,
   };
 };
 
@@ -113,11 +161,13 @@ const resolveStoredFilePath = (publicIdOrUrl) => {
     if (/^https?:\/\//i.test(relativePath)) {
       relativePath = new URL(relativePath).pathname;
     }
+
+    relativePath = decodeURIComponent(relativePath);
   } catch {
     return null;
   }
 
-  relativePath = decodeURIComponent(relativePath)
+  relativePath = relativePath
     .replace(/^\/+documents\/+/, "")
     .replace(/^\/+/, "");
 
@@ -145,10 +195,13 @@ const deleteLocalFile = async (publicIdOrUrl) => {
 };
 
 module.exports = {
+  SERVER_ROOT,
   DOCUMENTS_ROOT,
   sanitizeSegment,
   ensureDocumentsRoot,
+  getDocumentsStorageStatus,
   getClientFolderName,
   saveUploadedFile,
+  resolveStoredFilePath,
   deleteLocalFile,
 };

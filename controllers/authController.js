@@ -7,6 +7,7 @@ exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const User_js_1 = __importDefault(require("../models/User.js"));
+const AuditLog_js_1 = __importDefault(require("../models/AuditLog.js"));
 const PendingClient_js_1 = __importDefault(require("../models/PendingClient.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
@@ -470,8 +471,8 @@ const changePassword = async (req, res) => {
     if (newPassword !== confirmPassword) {
         return res.status(400).json({ success: false, message: "New password and confirm password do not match." });
     }
-    if (String(newPassword).length < 6) {
-        return res.status(400).json({ success: false, message: "New password must be at least 6 characters." });
+    if (String(newPassword).length < 8) {
+        return res.status(400).json({ success: false, message: "New password must be at least 8 characters." });
     }
     const user = await User_js_1.default.findById(req.user._id).select("+password");
     if (!user) {
@@ -487,6 +488,27 @@ const changePassword = async (req, res) => {
     }
     user.password = newPassword;
     await user.save();
+    if (user.userType === "admin") {
+        try {
+            await AuditLog_js_1.default.create({
+                user: user._id,
+                userName: user.name || "Administrator",
+                userEmail: user.email || "",
+                module: "security",
+                action: "edit",
+                method: req.method,
+                path: req.originalUrl || req.path,
+                recordId: String(user._id),
+                description: "EDIT security: administrator password changed",
+                metadata: {},
+                ipAddress: req.ip || req.socket?.remoteAddress || "",
+                userAgent: req.get("user-agent") || "",
+            });
+        }
+        catch (error) {
+            console.error("Password audit log write failed:", error.message);
+        }
+    }
     return res.json({ success: true, message: "Password changed successfully." });
 };
 exports.changePassword = changePassword;

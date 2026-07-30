@@ -136,6 +136,7 @@ const bookingSchema = new mongoose_1.default.Schema({
     billingLineItems: { type: [billingLineItemSchema], default: [] },
     additionalBillingCharges: { type: [additionalChargeSchema], default: [] },
     billingSubtotal: { type: Number, default: 0 },
+    isVatApplicable: { type: Boolean, default: true, index: true },
     vatRate: { type: Number, default: 0.12 },
     vatAmount: { type: Number, default: 0 },
     billingTotal: { type: Number, default: 0 },
@@ -152,6 +153,11 @@ const bookingSchema = new mongoose_1.default.Schema({
     paymentReviewedAt: { type: Date, default: null },
     paymentReviewedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     paymentRejectionReason: { type: String, default: "" },
+    cashReceived: { type: Number, default: 0 },
+    changeAmount: { type: Number, default: 0 },
+    receiptNumber: { type: String, default: "", trim: true, index: true },
+    receiptType: { type: String, enum: ["official_receipt", "acknowledgement_receipt"], default: "official_receipt" },
+    receiptGeneratedAt: { type: Date, default: null },
     gateOutRequestedAt: { type: Date, default: null },
     gateOutRequestRemarks: { type: String, default: "", trim: true },
     gateOutApprovedAt: { type: Date, default: null },
@@ -184,6 +190,8 @@ bookingSchema.pre("validate", function () {
     this.billingTotal = Math.max(Number(this.billingTotal) || 0, 0);
     this.billingDays = Math.max(Number(this.billingDays) || 0, 0);
     this.paymentAmount = Math.max(Number(this.paymentAmount) || 0, 0);
+    this.cashReceived = Math.max(Number(this.cashReceived) || 0, 0);
+    this.changeAmount = Math.max(Number(this.changeAmount) || 0, 0);
     this.additionalBillingCharges = (this.additionalBillingCharges || []).map((item) => {
         item.quantity = Math.max(Number(item.quantity) || 0, 0);
         item.rateAmount = Math.max(Number(item.rateAmount) || 0, 0);

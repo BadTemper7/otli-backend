@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteYardBlock = exports.updateYardBlock = exports.createYardBlock = exports.listYardBlocks = exports.deleteYardArea = exports.updateYardArea = exports.createYardArea = exports.listApprovalYardBlocks = exports.listYardAreas = exports.getYardSummary = void 0;
 const YardArea_js_1 = __importDefault(require("../models/YardArea.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
+const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const socket_js_1 = require("../socket/socket.js");
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
@@ -353,11 +354,26 @@ const deleteYardArea = async (req, res) => {
     if (!area) {
         return res.status(404).json({ success: false, message: "Yard area not found." });
     }
-    const blockCount = await YardBlock_js_1.default.countDocuments({ area: area._id });
+    const [blocks, activeBookingCount] = await Promise.all([
+        YardBlock_js_1.default.find({ area: area._id }).select("occupiedSlots name code").lean(),
+        Booking_js_1.default.countDocuments({
+            assignedArea: area._id,
+            status: { $nin: ["rejected", "completed_gate_out_done", "cancelled"] },
+        }),
+    ]);
+    const blockCount = blocks.length;
+    const occupiedBlocks = blocks.filter((block) => Number(block.occupiedSlots) > 0);
+    if (occupiedBlocks.length > 0 || activeBookingCount > 0) {
+        return res.status(409).json({
+            success: false,
+            message: "This yard area is still assigned to active containers and cannot be removed until every container is relocated, released, or cancelled.",
+        });
+    }
     if (blockCount > 0 && req.query.force !== "true") {
         return res.status(400).json({
             success: false,
-            message: "This area still has inventory blocks. Delete the blocks first or send force=true.",
+            message: "This area still has empty inventory blocks. Confirm removal again to delete the area and its empty blocks.",
+            canForceDelete: true,
         });
     }
     if (blockCount > 0) {

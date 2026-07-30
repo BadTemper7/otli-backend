@@ -238,6 +238,7 @@ const getYardContainerReport = async (req, res) => {
     const empty = emptySizeCounts();
     const laden = emptySizeCounts();
     const international = emptySizeCounts();
+    const local = emptySizeCounts();
     let totalTeu = 0;
     let totalFeu = 0;
     const revenueByClient = new Map();
@@ -245,8 +246,8 @@ const getYardContainerReport = async (req, res) => {
         const size = Number(booking.containerSize) || 20;
         const loadStatus = String(booking.containerLoadStatus || "laden").toLowerCase();
         addContainer(loadStatus === "empty" ? empty : laden, size);
-        if (normalizeRateType(booking.rateType) === "international")
-            addContainer(international, size);
+        if (normalizeRateType(booking.rateType) === "international") addContainer(international, size);
+        else addContainer(local, size);
         totalTeu += getTeu(size);
         totalFeu += getFeu(size);
     }
@@ -286,6 +287,7 @@ const getYardContainerReport = async (req, res) => {
             empty,
             laden,
             international,
+            local,
             totalTeu: Math.round(totalTeu * 100) / 100,
             totalFeu: Math.round(totalFeu * 100) / 100,
             releasedContainers: releaseReports.length,
@@ -315,11 +317,12 @@ const getOperationsDashboard = async (req, res) => {
             ],
         }).select("containerSize gateInApprovedAt storageStartDate storedAt inDate releasedAt").lean(),
         ReleaseReport_js_1.default.find({ releasedAt: { $gte: range.start, $lte: range.end } })
-            .select("releasedAt revenueTotal billingSubtotal vatAmount")
+            .select("releasedAt revenueTotal billingSubtotal vatAmount client")
+            .populate("client", "name companyName email")
             .sort({ releasedAt: 1 })
             .lean(),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
-            .select("containerNumber containerSize status")
+            .select("containerNumber containerSize status rateType client")
             .lean(),
         YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots").lean(),
         User_js_1.default.find().select("name email userType role status companyName createdAt").sort({ createdAt: -1 }).limit(10).lean(),
@@ -330,6 +333,22 @@ const getOperationsDashboard = async (req, res) => {
     // A container is considered overstaying once its Gate-Out request has been
     // approved but the physical release has not yet been completed.
     const overstayingContainers = currentInventoryBookings.filter((booking) => booking.status === "gate_out_approved").length;
+    const localContainers = currentInventoryBookings.filter((booking) => normalizeRateType(booking.rateType) === "local").length;
+    const customerTotals = new Map();
+    for (const report of periodReleaseReports) {
+        const clientId = report.client?._id ? String(report.client._id) : String(report.client || "");
+        if (!clientId) continue;
+        const current = customerTotals.get(clientId) || {
+            id: clientId,
+            name: report.client?.companyName || report.client?.name || report.client?.email || "Unknown Client",
+            transactionCount: 0,
+            revenue: 0,
+        };
+        current.transactionCount += 1;
+        current.revenue += Number(report.revenueTotal) || 0;
+        customerTotals.set(clientId, current);
+    }
+    const topCustomer = Array.from(customerTotals.values()).sort((a, b) => b.revenue - a.revenue || b.transactionCount - a.transactionCount)[0] || null;
     const totalYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.teuSlots) || 0), 0);
     const occupiedYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.occupiedSlots) || 0), 0);
     const availableYardCapacity = Math.max(totalYardCapacity - occupiedYardCapacity, 0);
@@ -353,6 +372,7 @@ const getOperationsDashboard = async (req, res) => {
             containersReceived,
             containersReleased,
             currentInventory: currentInventoryBookings.length,
+            localContainers,
             availableYardCapacity,
             totalYardCapacity,
             occupiedYardCapacity,
@@ -363,6 +383,7 @@ const getOperationsDashboard = async (req, res) => {
             revenueSubtotal,
             revenueVat,
             overstayingContainers,
+            topCustomer: topCustomer ? { ...topCustomer, revenue: roundMoney(topCustomer.revenue) } : null,
         },
         bookingSummary: {
             pending: pendingBookings,

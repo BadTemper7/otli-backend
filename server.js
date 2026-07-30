@@ -7,6 +7,7 @@ const cors = require("cors");
 const path = require("path");
 const {
   ensureDocumentsRoot,
+  getDocumentsStorageStatus,
   DOCUMENTS_ROOT,
 } = require("./utils/localFileStorage.js");
 
@@ -19,9 +20,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Local document storage. Client folders are created automatically on upload.
-ensureDocumentsRoot().catch((error) => {
-  console.error("❌ Unable to initialize documents directory:", error.message);
-});
+// Storage is initialized again during server bootstrap before accepting requests.
 app.use(
   "/documents",
   express.static(DOCUMENTS_ROOT, {
@@ -41,18 +40,6 @@ app.use(
 const MONGODB_URI =
   process.env.MONGODB_URI || "mongodb://localhost:27017/testdb";
 
-mongoose
-  .connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
-    console.log("✅ Connected to MongoDB successfully!");
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1);
-  });
 
 // ==================== MODELS ====================
 
@@ -95,11 +82,15 @@ app.get("/", (req, res) => {
 });
 
 // Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-    mongodb:
-      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+app.get("/health", async (req, res) => {
+  const documentStorage = await getDocumentsStorageStatus();
+  const databaseConnected = mongoose.connection.readyState === 1;
+  const healthy = databaseConnected && documentStorage.ready;
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? "healthy" : "degraded",
+    mongodb: databaseConnected ? "connected" : "disconnected",
+    documentStorage,
     uptime: process.uptime(),
   });
 });
@@ -291,9 +282,26 @@ const socketAllowedOrigins = String(
 
 initSocket(httpServer, socketAllowedOrigins);
 
-httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`🔗 Test the API: http://localhost:${PORT}/api/test`);
-  console.log("🔌 Socket.IO is enabled");
+const startServer = async () => {
+  const storagePath = await ensureDocumentsRoot();
+  console.log(`📁 Document storage ready: ${storagePath}`);
+
+  await mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  console.log("✅ Connected to MongoDB successfully!");
+
+  httpServer.listen(PORT, () => {
+    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`🔗 Test the API: http://localhost:${PORT}/api/test`);
+    console.log("🔌 Socket.IO is enabled");
+  });
+};
+
+startServer().catch((error) => {
+  console.error("❌ Server startup failed:", error.message);
+  if (error?.stack) console.error(error.stack);
+  process.exit(1);
 });
