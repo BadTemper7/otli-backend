@@ -37,6 +37,7 @@ router.delete("/clients/:id", (0, authMiddleware_js_1.requirePermission)("client
 router.get("/reports/yard-containers", (0, authMiddleware_js_1.requirePermission)("reports", "view"), (0, asyncHandler_js_1.default)(reportController_js_1.getYardContainerReport));
 router.get("/bookings/summary", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingSummary));
 router.get("/bookings", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
+router.get("/bookings/calendar", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBookingCalendar));
 router.get("/bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
 router.get("/pre-advice-bookings", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
 router.get("/pre-advice-bookings/yard/areas", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.cancelBooking = exports.rejectBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingRateClassification = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.cancelBooking = exports.rejectBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingRateClassification = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBookingCalendar = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -18,6 +18,7 @@ const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
 const billingDays_js_1 = require("../utils/billingDays.js");
+const notificationService_js_1 = require("../utils/notificationService.js");
 const ACTIVE_BOOKING_STATUSES = [
     "approved_area_assigned",
     "gate_in_approved",
@@ -186,6 +187,35 @@ const ensureBookingHourCapacity = async (value, excludeBookingId = null) => {
         error.statusCode = 409;
         throw error;
     }
+};
+const buildCalendarDayRange = (dateValue, timezoneOffsetMinutes = 0) => {
+    const match = String(dateValue || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match)
+        return null;
+    const [, year, month, day] = match;
+    const safeOffset = Number.isFinite(Number(timezoneOffsetMinutes)) ? Number(timezoneOffsetMinutes) : 0;
+    const startMs = Date.UTC(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0) + safeOffset * 60 * 1000;
+    const start = new Date(startMs);
+    const end = new Date(startMs + 24 * 60 * 60 * 1000);
+    return { start, end, timezoneOffsetMinutes: safeOffset };
+};
+const getCalendarLocalHour = (value, timezoneOffsetMinutes = 0) => {
+    const date = parseBookingDate(value);
+    if (!date)
+        return null;
+    const localDate = new Date(date.getTime() - timezoneOffsetMinutes * 60 * 1000);
+    return localDate.getUTCHours();
+};
+const getCalendarStatusBucket = (status = "") => {
+    if (status === "pending_admin_approval")
+        return "pending";
+    if (["approved_area_assigned", "gate_in_approved"].includes(status))
+        return "approved";
+    if (["stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(status))
+        return "active";
+    if (status === "completed_gate_out_done")
+        return "completed";
+    return "other";
 };
 const validateGateOutDate = (booking, outDate) => {
     const parsedIn = parseBookingDate(booking.inDate || booking.expectedArrivalDate || booking.storageStartDate || booking.storedAt || booking.gateInApprovedAt);
@@ -497,6 +527,22 @@ const notifyEmail = async ({ to, subject, title, booking, message, details = [],
 };
 const notifyClient = async (booking, title, message, details = [], options = {}) => {
     const populated = booking.client?.email ? booking : await booking.populate("client", "name email companyName");
+    const recipient = populated.client?._id || populated.client;
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient,
+        type: options.notificationType || "booking",
+        title,
+        message,
+        booking: populated._id || null,
+        bookingReference: populated.bookingReference || populated.bookingNumber || "",
+        containerNumber: populated.containerNumber || "",
+        actionPath: options.actionPath || "/booking-history",
+        metadata: {
+            status: populated.status || "",
+            billingStatus: populated.billingStatus || "",
+            details,
+        },
+    });
     await notifyEmail({
         to: populated.client?.email,
         subject: `${title} - ${populated.bookingReference}`,
@@ -1086,6 +1132,60 @@ const listAdminBookings = async (req, res) => {
     return res.json({ success: true, bookings: bookings.map(safeBooking) });
 };
 exports.listAdminBookings = listAdminBookings;
+const getAdminBookingCalendar = async (req, res) => {
+    const today = new Date();
+    const fallbackDate = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}-${String(today.getUTCDate()).padStart(2, "0")}`;
+    const selectedDate = String(req.query.date || fallbackDate);
+    const timezoneOffset = Number(req.query.timezoneOffset || 0);
+    const range = buildCalendarDayRange(selectedDate, timezoneOffset);
+    if (!range)
+        return res.status(400).json({ success: false, message: "Please provide a valid schedule date in YYYY-MM-DD format." });
+    const bookings = await populateBooking(Booking_js_1.default.find({
+        inDate: { $gte: range.start, $lt: range.end },
+        status: { $nin: ["rejected", "cancelled"] },
+    })).sort({ inDate: 1, createdAt: 1, bookingReference: 1 });
+    const safeBookings = bookings.map(safeBooking);
+    const grouped = new Map();
+    const overflow = [];
+    for (const booking of safeBookings) {
+        const hour = getCalendarLocalHour(booking.inDate || booking.expectedArrivalDate, timezoneOffset);
+        if (hour === null)
+            continue;
+        if (!grouped.has(hour))
+            grouped.set(hour, []);
+        const entries = grouped.get(hour);
+        if (entries.length < MAX_CONTAINERS_PER_HOUR) {
+            entries.push(booking);
+        }
+        else {
+            overflow.push(booking);
+        }
+    }
+    const rows = Array.from({ length: 24 }, (_, hour) => {
+        const rowBookings = grouped.get(hour) || [];
+        return {
+            hour,
+            slots: Array.from({ length: MAX_CONTAINERS_PER_HOUR }, (_, slotIndex) => ({
+                slotNumber: slotIndex + 1,
+                booking: rowBookings[slotIndex] || null,
+            })),
+        };
+    });
+    const summary = { total: safeBookings.length, pending: 0, approved: 0, active: 0, completed: 0, other: 0 };
+    for (const booking of safeBookings) {
+        const bucket = getCalendarStatusBucket(booking.status);
+        summary[bucket] = (summary[bucket] || 0) + 1;
+    }
+    return res.json({
+        success: true,
+        date: selectedDate,
+        maxSlotsPerHour: MAX_CONTAINERS_PER_HOUR,
+        rows,
+        summary,
+        overflowCount: overflow.length,
+    });
+};
+exports.getAdminBookingCalendar = getAdminBookingCalendar;
 const getAdminBooking = async (req, res) => {
     const booking = await populateBooking(Booking_js_1.default.findById(req.params.id));
     if (!booking)
@@ -1540,6 +1640,18 @@ const addBookingCongestionSurcharge = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:congestion_surcharge_added", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:congestion_surcharge_added", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: booking.client?._id || booking.client,
+        type: "billing_charge_added",
+        title: "Congestion surcharge added",
+        message: billingResult
+            ? `A congestion surcharge was added. Your updated bill is PHP ${billingResult.total.toLocaleString()}.`
+            : "A congestion surcharge was added and will be included when your final bill is computed.",
+        booking: booking._id,
+        bookingReference: booking.bookingReference || booking.bookingNumber || "",
+        containerNumber: booking.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.status(201).json({ success: true, message: "Congestion Surcharge added.", booking: payload });
 };
 exports.addBookingCongestionSurcharge = addBookingCongestionSurcharge;
@@ -1584,6 +1696,18 @@ const addBookingAdditionalCharge = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:additional_charge_added", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:additional_charge_added", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: booking.client?._id || booking.client,
+        type: "billing_charge_added",
+        title: "Additional billing item added",
+        message: billingResult
+            ? `${description} was added to your bill. Updated total: PHP ${billingResult.total.toLocaleString()}.`
+            : `${description} was added and will be included when your final bill is computed.`,
+        booking: booking._id,
+        bookingReference: booking.bookingReference || booking.bookingNumber || "",
+        containerNumber: booking.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.status(201).json({ success: true, message: "Additional billing charge added.", booking: payload });
 };
 exports.addBookingAdditionalCharge = addBookingAdditionalCharge;
@@ -1619,6 +1743,18 @@ const deleteBookingAdditionalCharge = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:additional_charge_deleted", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:additional_charge_deleted", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: booking.client?._id || booking.client,
+        type: "billing_charge_removed",
+        title: "Additional billing item removed",
+        message: billingResult
+            ? `${description} was removed from your bill. Updated total: PHP ${billingResult.total.toLocaleString()}.`
+            : `${description} was removed from your pending billing items.`,
+        booking: booking._id,
+        bookingReference: booking.bookingReference || booking.bookingNumber || "",
+        containerNumber: booking.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.json({ success: true, message: "Additional billing charge removed.", booking: payload });
 };
 exports.deleteBookingAdditionalCharge = deleteBookingAdditionalCharge;

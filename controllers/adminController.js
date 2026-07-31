@@ -8,6 +8,7 @@ const User_js_1 = __importDefault(require("../models/User.js"));
 const authController_js_1 = require("./authController.js");
 const socket_js_1 = require("../socket/socket.js");
 const permissions_js_1 = require("../utils/permissions.js");
+const notificationService_js_1 = require("../utils/notificationService.js");
 const listUsers = async (req, res) => {
     const { userType, status, search } = req.query;
     const filter = {};
@@ -108,6 +109,15 @@ const updateUser = async (req, res) => {
     const payload = (0, authController_js_1.safeUser)(user);
     (0, socket_js_1.emitToAdmins)("admin:user_updated", payload);
     (0, socket_js_1.emitToUser)(user._id, "account:updated", payload);
+    if (user.userType === "client") {
+        await (0, notificationService_js_1.createClientNotification)({
+            recipient: user._id,
+            type: "account",
+            title: "Account information updated",
+            message: "Your One True Logistics account information was updated by an administrator.",
+            actionPath: "/profile",
+        });
+    }
     return res.json({ success: true, message: "User updated successfully.", user: payload });
 };
 exports.updateUser = updateUser;
@@ -140,6 +150,13 @@ const approveClient = async (req, res) => {
     const payload = (0, authController_js_1.safeUser)(user);
     (0, socket_js_1.emitToAdmins)("client:approved", payload);
     (0, socket_js_1.emitToUser)(user._id, "client:approved", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: user._id,
+        type: "account_approved",
+        title: "Client account approved",
+        message: "Your account has been verified. Booking and rates modules are now available.",
+        actionPath: "/",
+    });
     return res.json({ success: true, message: "Client verified successfully.", user: payload });
 };
 exports.approveClient = approveClient;
@@ -156,6 +173,13 @@ const rejectClient = async (req, res) => {
     const payload = (0, authController_js_1.safeUser)(user);
     (0, socket_js_1.emitToAdmins)("client:rejected", payload);
     (0, socket_js_1.emitToUser)(user._id, "client:rejected", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: user._id,
+        type: "account_rejected",
+        title: "Client registration requires correction",
+        message: user.rejectionReason,
+        actionPath: "/profile",
+    });
     return res.json({ success: true, message: "Client rejected successfully.", user: payload });
 };
 exports.rejectClient = rejectClient;

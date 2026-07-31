@@ -17,6 +17,7 @@ const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
 const permissions_js_1 = require("../utils/permissions.js");
 const legalPolicies_js_1 = require("../utils/legalPolicies.js");
+const notificationService_js_1 = require("../utils/notificationService.js");
 const documentLabels = {
     businessPermit: "Business Permit",
     birCertificate: "BIR Certificate",
@@ -460,6 +461,13 @@ const resubmitRejectedClient = async (req, res) => {
     const payload = (0, exports.safeUser)(user);
     (0, socket_js_1.emitToAdmins)("client:resubmitted", payload);
     (0, socket_js_1.emitToUser)(user._id, "client:resubmitted", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: user._id,
+        type: "account_resubmitted",
+        title: "Account resubmitted",
+        message: "Your corrected registration was submitted and is waiting for admin verification.",
+        actionPath: "/profile",
+    });
     return res.json({ success: true, message: "Account resubmitted for verification.", user: payload });
 };
 exports.resubmitRejectedClient = resubmitRejectedClient;

@@ -12,6 +12,7 @@ const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
+const notificationService_js_1 = require("../utils/notificationService.js");
 const documentLabels = {
     deliveryOrder: "Delivery Order",
     bookingConfirmation: "Booking Confirmation",
@@ -392,6 +393,15 @@ const confirmPreAdvice = async (req, res) => {
     const payload = safePreAdvice(preAdvice);
     (0, socket_js_1.emitToAdmins)("preAdvice:confirmed", payload);
     (0, socket_js_1.emitToUser)(preAdvice.client?._id || preAdvice.client, "preAdvice:confirmed", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: preAdvice.client?._id || preAdvice.client,
+        type: "pre_advice_confirmed",
+        title: "Pre-advice confirmed",
+        message: "Your pre-advice was confirmed and a yard location was assigned. The container can now proceed to Gate-In.",
+        bookingReference: preAdvice.bookingNumber || "",
+        containerNumber: preAdvice.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.json({
         success: true,
         message: "Pre-advice confirmed with yard location. Container can now proceed to Gate-In.",
@@ -428,6 +438,15 @@ const rejectPreAdvice = async (req, res) => {
     const payload = safePreAdvice(preAdvice);
     (0, socket_js_1.emitToAdmins)("preAdvice:rejected", payload);
     (0, socket_js_1.emitToUser)(preAdvice.client?._id || preAdvice.client, "preAdvice:rejected", payload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: preAdvice.client?._id || preAdvice.client,
+        type: "pre_advice_rejected",
+        title: "Pre-advice rejected",
+        message: preAdvice.rejectionReason || "Your pre-advice requires correction before it can proceed.",
+        bookingReference: preAdvice.bookingNumber || "",
+        containerNumber: preAdvice.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.json({ success: true, message: "Pre-advice rejected.", preAdvice: payload });
 };
 exports.rejectPreAdvice = rejectPreAdvice;
@@ -550,6 +569,15 @@ const completeGateIn = async (req, res) => {
     (0, socket_js_1.emitToAdmins)("gateIn:completed", gateInPayload);
     (0, socket_js_1.emitToAdmins)("inventory:container_created", inventoryPayload);
     (0, socket_js_1.emitToUser)(preAdvice.client?._id || preAdvice.client, "gateIn:completed", gateInPayload);
+    await (0, notificationService_js_1.createClientNotification)({
+        recipient: preAdvice.client?._id || preAdvice.client,
+        type: "gate_in_completed",
+        title: "Gate-In completed",
+        message: "Your container passed Gate-In and was placed in its approved yard location.",
+        bookingReference: preAdvice.bookingNumber || "",
+        containerNumber: preAdvice.containerNumber || "",
+        actionPath: "/booking-history",
+    });
     return res.status(201).json({
         success: true,
         message: "Gate-In completed. Container was automatically placed in the approved yard location.",
