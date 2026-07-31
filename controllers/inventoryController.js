@@ -13,6 +13,7 @@ const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
 };
+const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
 const getYardCapacityUsage = (containerSize, yardContainerSize = 20) => {
     const size = Number(containerSize) || 20;
     const yardSize = Number(yardContainerSize) || 20;
@@ -69,6 +70,8 @@ const safeBookingContainer = (booking) => {
         containerSize: doc.containerSize,
         containerType: doc.containerType,
         containerStatus: doc.containerLoadStatus,
+        containerLoadStatus: doc.containerLoadStatus,
+        rateType: normalizeRateType(doc.rateType),
         shippingLine: doc.shippingLine,
         bookingNumber: doc.bookingNumber || "",
         blNumber: doc.blNumber || "",
@@ -121,6 +124,8 @@ const safeContainer = (container) => {
         containerSize: doc.containerSize,
         containerType: doc.containerType,
         containerStatus: doc.containerStatus,
+        containerLoadStatus: doc.containerStatus,
+        rateType: normalizeRateType(doc.rateType),
         shippingLine: doc.shippingLine,
         bookingNumber: doc.bookingNumber || "",
         blNumber: doc.blNumber || "",

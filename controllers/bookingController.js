@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.cancelBooking = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.cancelBooking = exports.rejectBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingRateClassification = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -457,6 +457,8 @@ const safeBooking = (booking) => {
         receiptGeneratedAt: doc.receiptGeneratedAt,
         gateOutRequestedAt: doc.gateOutRequestedAt,
         gateOutRequestRemarks: doc.gateOutRequestRemarks || "",
+        gateOutRejectedAt: doc.gateOutRejectedAt,
+        gateOutRejectionReason: doc.gateOutRejectionReason || "",
         gateOutApprovedAt: doc.gateOutApprovedAt,
         gateOutRemarks: doc.gateOutRemarks || "",
         releasedAt: doc.releasedAt,
@@ -1060,12 +1062,16 @@ const getClientBooking = async (req, res) => {
 };
 exports.getClientBooking = getClientBooking;
 const listAdminBookings = async (req, res) => {
-    const { status, billingStatus, search } = req.query;
+    const { status, billingStatus, loadStatus, rateType, search } = req.query;
     const query = {};
     if (status && status !== "all")
         query.status = status;
     if (billingStatus && billingStatus !== "all")
         query.billingStatus = billingStatus;
+    if (["empty", "laden"].includes(String(loadStatus || "").toLowerCase()))
+        query.containerLoadStatus = String(loadStatus).toLowerCase();
+    if (["local", "international"].includes(String(rateType || "").toLowerCase()))
+        query.rateType = String(rateType).toLowerCase();
     if (search) {
         const term = String(search).trim();
         query.$or = [
@@ -1403,22 +1409,55 @@ const markBookingStored = async (req, res) => {
     return res.json({ success: true, message: wasAlreadyStored ? "Stored container billing refreshed." : "Container marked as stored and billing refreshed.", booking: payload });
 };
 exports.markBookingStored = markBookingStored;
-const updateBookingBillingOperation = async (req, res) => {
+const updateBookingRateClassification = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
         return res.status(404).json({ success: false, message: "Booking not found." });
     if (!["unpaid", "payment_rejected"].includes(booking.billingStatus)) {
-        return res.status(400).json({ success: false, message: "Billing can no longer be changed after payment is submitted or approved." });
+        return res.status(400).json({ success: false, message: "Local or International classification can no longer be changed after payment is submitted or approved." });
     }
+    const requestedRateType = String(req.body.rateType || "").trim().toLowerCase();
+    if (!["local", "international"].includes(requestedRateType)) {
+        return res.status(400).json({ success: false, message: "Select Local or International as the rate classification." });
+    }
+    const previousRateType = normalizeRateType(booking.rateType);
     booking.serviceType = normalizeBookingServiceType(booking.serviceType);
-    booking.rateType = normalizeRateType(booking.rateType);
+    booking.rateType = requestedRateType;
+    const congestionCharge = (booking.additionalBillingCharges || []).find((item) => item.source === "congestion_surcharge");
+    if (congestionCharge) {
+        const congestionRate = await BillingRate_js_1.default.findOne({
+            status: "active",
+            rateType: requestedRateType,
+            effectiveDate: { $lte: new Date() },
+            billingScope: "display_only",
+            containerSize: String(booking.containerSize),
+            $or: [
+                { chargeCode: `CONGESTION_${booking.containerSize}` },
+                { description: { $regex: "congestion", $options: "i" } },
+            ],
+        }).sort({ effectiveDate: -1, createdAt: -1 });
+        if (!congestionRate) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot change to ${requestedRateType === "international" ? "International" : "Local"}. Configure an active ${booking.containerSize}ft congestion surcharge for that classification first.`,
+            });
+        }
+        congestionCharge.rate = congestionRate._id;
+        congestionCharge.chargeCode = congestionRate.chargeCode;
+        congestionCharge.description = congestionRate.description || "Congestion Surcharge";
+        congestionCharge.quantity = 1;
+        congestionCharge.rateAmount = Number(congestionRate.rateAmount) || 0;
+        congestionCharge.amount = Number(congestionRate.rateAmount) || 0;
+    }
     const shouldRecompute = ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"].includes(booking.status);
     const billingResult = shouldRecompute ? await (0, exports.computeBookingBilling)(booking, { persist: true }) : null;
-    const rateTypeLabel = booking.rateType === "international" ? "International" : "Local";
+    const rateTypeLabel = requestedRateType === "international" ? "International" : "Local";
+    const previousRateTypeLabel = previousRateType === "international" ? "International" : "Local";
+    const classificationChanged = previousRateType !== requestedRateType;
     addHistory(booking, {
         remarks: billingResult
-            ? `Billing refreshed using the ${rateTypeLabel} classification selected on the booking. Total: PHP ${billingResult.total.toLocaleString()} for ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`
-            : `Billing classification confirmed as ${rateTypeLabel} from the booking. Billing will compute once the container enters the billable workflow.`,
+            ? `${classificationChanged ? `Rate classification changed from ${previousRateTypeLabel} to ${rateTypeLabel}` : `${rateTypeLabel} rate classification reconfirmed`}. Billing automatically recalculated to PHP ${billingResult.total.toLocaleString()} using the current ${rateTypeLabel} rates.`
+            : `${classificationChanged ? `Rate classification changed from ${previousRateTypeLabel} to ${rateTypeLabel}` : `${rateTypeLabel} rate classification reconfirmed`}. Billing will automatically use ${rateTypeLabel} rates once the container reaches the billable workflow.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1428,9 +1467,27 @@ const updateBookingBillingOperation = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:billing_operation_updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:billing_operation_updated", payload);
-    return res.json({ success: true, message: billingResult ? `Billing refreshed using ${rateTypeLabel} rates from the booking.` : `Billing will use ${rateTypeLabel} rates from the booking.`, booking: payload });
+    await notifyClient(
+        booking,
+        "Booking rate classification updated",
+        billingResult
+            ? `Your booking classification is now ${rateTypeLabel}. Billing has been automatically recalculated using the current ${rateTypeLabel} rates.`
+            : `Your booking classification is now ${rateTypeLabel}. The matching ${rateTypeLabel} rates will be used automatically when billing is computed.`,
+        [
+            { label: "Classification", value: rateTypeLabel },
+            { label: "Billing Total", value: billingResult ? `PHP ${billingResult.total.toLocaleString()}` : "Pending billable workflow" },
+        ],
+    );
+    return res.json({
+        success: true,
+        message: billingResult
+            ? `${rateTypeLabel} classification saved. Billing recalculated to PHP ${billingResult.total.toLocaleString()}.`
+            : `${rateTypeLabel} classification saved. Billing will use the matching rates automatically.`,
+        booking: payload,
+    });
 };
-exports.updateBookingBillingOperation = updateBookingBillingOperation;
+exports.updateBookingRateClassification = updateBookingRateClassification;
+exports.updateBookingBillingOperation = updateBookingRateClassification;
 const getBookingCongestionSurchargeOption = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
@@ -1664,6 +1721,44 @@ const recordAdminCashPayment = async (req, res) => {
     if (hasExistingOnlinePayment) {
         return res.status(409).json({ success: false, message: "Cash payment is disabled because an online payment already exists for this booking." });
     }
+    const rawAdditionalItems = Array.isArray(req.body.additionalItems) ? req.body.additionalItems : [];
+    if (rawAdditionalItems.length > 20) {
+        return res.status(400).json({ success: false, message: "A cash payment can include up to 20 additional items." });
+    }
+    const additionalItems = [];
+    for (let index = 0; index < rawAdditionalItems.length; index += 1) {
+        const rawItem = rawAdditionalItems[index] || {};
+        const description = String(rawItem.description || "").trim();
+        const quantity = Number(rawItem.quantity);
+        const rateAmount = Number(rawItem.rateAmount);
+        if (!description) {
+            return res.status(400).json({ success: false, message: `Additional item ${index + 1} requires a description.` });
+        }
+        if (/congestion/i.test(description)) {
+            return res.status(400).json({ success: false, message: "Use the configured Congestion Surcharge option instead of adding it manually." });
+        }
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+            return res.status(400).json({ success: false, message: `Additional item ${index + 1} requires a quantity greater than zero.` });
+        }
+        if (!Number.isFinite(rateAmount) || rateAmount <= 0) {
+            return res.status(400).json({ success: false, message: `Additional item ${index + 1} requires a rate greater than zero.` });
+        }
+        const normalizedQuantity = Math.round(quantity * 100) / 100;
+        const normalizedRateAmount = Math.round(rateAmount * 100) / 100;
+        additionalItems.push({
+            description,
+            quantity: normalizedQuantity,
+            rateAmount: normalizedRateAmount,
+            amount: Math.round(normalizedQuantity * normalizedRateAmount * 100) / 100,
+            notes: String(rawItem.notes || "").trim(),
+            source: "manual",
+            addedBy: req.user._id,
+            addedAt: new Date(),
+        });
+    }
+    if (additionalItems.length > 0) {
+        booking.additionalBillingCharges.push(...additionalItems);
+    }
     booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable);
     const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true });
     if (!billingResult.hasMatchedRates || billingResult.total <= 0) {
@@ -1703,15 +1798,12 @@ const recordAdminCashPayment = async (req, res) => {
     booking.receiptType = booking.isVatApplicable ? "official_receipt" : "acknowledgement_receipt";
     booking.receiptGeneratedAt = new Date();
     booking.billingStatus = "paid_approved";
-    if (booking.status === "gate_out_requested") {
-        booking.status = "gate_out_approved";
-        booking.gateOutApprovedAt = new Date();
-        booking.gateOutApprovedBy = req.user._id;
-        booking.gateOutRemarks = String(req.body.gateOutRemarks || "Gate-out automatically approved after cash payment.");
-    }
+    const addedItemsHistory = additionalItems.length > 0
+        ? ` Added ${additionalItems.length} additional item${additionalItems.length === 1 ? "" : "s"} worth PHP ${additionalItems.reduce((sum, item) => sum + item.amount, 0).toLocaleString()}.`
+        : "";
     addHistory(booking, {
         billingStatus: "paid_approved",
-        remarks: `Cash payment recorded. Received PHP ${cashReceived.toLocaleString()}, change PHP ${changeAmount.toLocaleString()}. Payment and gate-out approved. Receipt ${booking.receiptNumber}.`,
+        remarks: `Cash payment recorded.${addedItemsHistory} Received PHP ${cashReceived.toLocaleString()}, change PHP ${changeAmount.toLocaleString()}. Payment approved; Gate-Out remains pending admin review. Receipt ${booking.receiptNumber}.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1720,14 +1812,12 @@ const recordAdminCashPayment = async (req, res) => {
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:cash_payment_recorded", payload);
-    (0, socket_js_1.emitToAdmins)("booking:gate_out_approved", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:cash_payment_recorded", payload);
-    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_out_approved", payload);
-    await notifyClient(booking, "Cash payment recorded", "Your cash payment was recorded and approved by the authorized cashier.", [
+    await notifyClient(booking, "Cash payment recorded", "Your cash payment was recorded and approved. Gate-Out is now pending a separate admin decision.", [
         { label: "Payment Reference", value: booking.paymentReferenceNumber },
         { label: "Amount", value: `PHP ${booking.paymentAmount.toLocaleString()}` },
     ]);
-    return res.json({ success: true, message: "Cash payment recorded, receipt generated, and gate-out approved.", booking: payload, receipt: { number: booking.receiptNumber, type: booking.receiptType, cashReceived, changeAmount } });
+    return res.json({ success: true, message: additionalItems.length > 0 ? "Additional items added, cash payment recorded, and receipt generated. Review Gate-Out from the View modal." : "Cash payment recorded and receipt generated. Review Gate-Out from the View modal.", booking: payload, receipt: { number: booking.receiptNumber, type: booking.receiptType, cashReceived, changeAmount } });
 };
 exports.recordAdminCashPayment = recordAdminCashPayment;
 const approveBookingPayment = async (req, res) => {
@@ -1853,6 +1943,35 @@ const cancelBooking = async (req, res) => {
     return res.json({ success: true, message: "Booking cancelled.", booking: payload });
 };
 exports.cancelBooking = cancelBooking;
+const rejectBookingGateOut = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    if (booking.status !== "gate_out_requested") {
+        return res.status(400).json({ success: false, message: "Only pending gate-out requests can be rejected." });
+    }
+    const reason = String(req.body.reason || "").trim();
+    if (!reason) {
+        return res.status(400).json({ success: false, message: "A gate-out rejection reason is required." });
+    }
+    booking.gateOutRejectedAt = new Date();
+    booking.gateOutRejectedBy = req.user._id;
+    booking.gateOutRejectionReason = reason;
+    addHistory(booking, { remarks: `Gate-out request rejected by admin: ${reason}`, changedBy: req.user._id });
+    await booking.save();
+    await booking.populate("client", "name email companyName phoneNumber");
+    await booking.populate("assignedArea", "name code isCongestionArea");
+    await booking.populate("assignedBlock", "name code");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:gate_out_rejected", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_out_rejected", payload);
+    await notifyClient(booking, "Gate-out request rejected", "Your gate-out request requires correction or additional coordination before release approval.", [
+        { label: "Container", value: booking.containerNumber },
+        { label: "Reason", value: reason },
+    ]);
+    return res.json({ success: true, message: "Gate-out request rejected.", booking: payload });
+};
+exports.rejectBookingGateOut = rejectBookingGateOut;
 const approveBookingGateOut = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
@@ -1864,6 +1983,9 @@ const approveBookingGateOut = async (req, res) => {
         return res.status(403).json({ success: false, message: "Payment must be paid / approved before gate-out approval." });
     }
     booking.status = "gate_out_approved";
+    booking.gateOutRejectedAt = null;
+    booking.gateOutRejectedBy = null;
+    booking.gateOutRejectionReason = "";
     booking.gateOutApprovedAt = new Date();
     booking.gateOutApprovedBy = req.user._id;
     booking.gateOutRemarks = req.body.remarks || "";

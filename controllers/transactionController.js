@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.listPaymentHistory = void 0;
 const Booking_js_1 = require("../models/Booking.js");
+const normalizeRateType = (value) => String(value || "").trim().toLowerCase() === "international" ? "international" : "local";
 const listPaymentHistory = async (req, res) => {
     const query = {
         $or: [
@@ -23,6 +24,10 @@ const listPaymentHistory = async (req, res) => {
         id: String(booking._id),
         bookingReference: booking.bookingReference,
         containerNumber: booking.containerNumber,
+        containerSize: Number(booking.containerSize) || 20,
+        containerType: booking.containerType || "",
+        containerLoadStatus: booking.containerLoadStatus || "empty",
+        rateType: normalizeRateType(booking.rateType),
         clientName: booking.client?.companyName || booking.client?.name || booking.client?.email || "Unknown Client",
         clientEmail: booking.client?.email || "",
         status: booking.status,

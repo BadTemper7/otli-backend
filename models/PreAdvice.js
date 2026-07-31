@@ -27,6 +27,7 @@ const preAdviceSchema = new mongoose_1.default.Schema({
         required: true,
     },
     containerStatus: { type: String, enum: ["empty", "laden"], required: true },
+    rateType: { type: String, enum: ["local", "international"], default: "local", index: true },
     shippingLine: { type: String, required: true, trim: true },
     bookingNumber: { type: String, default: "", trim: true },
     blNumber: { type: String, default: "", trim: true },

@@ -23,6 +23,7 @@ const requiredDocumentFields = ["deliveryOrder"];
 const normalizeContainerNumber = (value = "") => {
     return String(value).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
 };
+const normalizeRateType = (value) => String(value || "").trim().toLowerCase() === "international" ? "international" : "local";
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
@@ -142,6 +143,8 @@ const safePreAdvice = (preAdvice) => {
         containerSize: doc.containerSize,
         containerType: doc.containerType,
         containerStatus: doc.containerStatus,
+        containerLoadStatus: doc.containerStatus,
+        rateType: normalizeRateType(doc.rateType || client.companyMarket),
         shippingLine: doc.shippingLine,
         bookingNumber: doc.bookingNumber || "",
         blNumber: doc.blNumber || "",
@@ -175,7 +178,7 @@ const safePreAdvice = (preAdvice) => {
 };
 const populatePreAdvice = (query) => {
     return query
-        .populate("client", "name email companyName")
+        .populate("client", "name email companyName companyMarket")
         .populate("plannedArea", "name code")
         .populate("plannedBlock", "name code");
 };
@@ -265,7 +268,7 @@ const handleValidationError = (error, res) => {
     throw error;
 };
 const createClientPreAdvice = async (req, res) => {
-    const { containerNumber, containerSize, containerType, containerStatus, shippingLine, blNumber, vesselVoyage, cargoDescription, dangerousGoodsClassification, weight, arrivalDate, } = req.body;
+    const { containerNumber, containerSize, containerType, containerStatus, rateType, shippingLine, blNumber, vesselVoyage, cargoDescription, dangerousGoodsClassification, weight, arrivalDate, } = req.body;
     const requiredFields = [containerNumber, containerSize, containerType, containerStatus, shippingLine, arrivalDate];
     if (requiredFields.some((value) => !String(value || "").trim())) {
         return res.status(400).json({ success: false, message: "Please complete all required pre-advice fields." });
@@ -309,6 +312,7 @@ const createClientPreAdvice = async (req, res) => {
         containerSize: Number(containerSize),
         containerType,
         containerStatus,
+        rateType: normalizeRateType(rateType || req.user.companyMarket),
         shippingLine,
         blNumber: blNumber || "",
         vesselVoyage: vesselVoyage || "",
@@ -502,6 +506,7 @@ const completeGateIn = async (req, res) => {
         containerSize: preAdvice.containerSize,
         containerType: preAdvice.containerType,
         containerStatus: preAdvice.containerStatus,
+        rateType: normalizeRateType(preAdvice.rateType || preAdvice.client?.companyMarket),
         shippingLine: preAdvice.shippingLine,
         bookingNumber: preAdvice.bookingNumber,
         blNumber: preAdvice.blNumber,
