@@ -57,6 +57,29 @@ const statusHistorySchema = new mongoose_1.default.Schema({
     changedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     changedAt: { type: Date, default: Date.now },
 }, { _id: false });
+const paymentTransactionSchema = new mongoose_1.default.Schema({
+    amount: { type: Number, default: 0, min: 0 },
+    subtotal: { type: Number, default: 0, min: 0 },
+    isVatApplicable: { type: Boolean, default: true },
+    vatRate: { type: Number, default: 0, min: 0 },
+    vatAmount: { type: Number, default: 0, min: 0 },
+    grossTotal: { type: Number, default: 0, min: 0 },
+    lineItems: { type: [billingLineItemSchema], default: [] },
+    paymentTypeSnapshot: { type: paymentTypeSnapshotSchema, default: () => ({}) },
+    referenceNumber: { type: String, default: "", trim: true },
+    paymentDate: { type: Date, default: null },
+    remarks: { type: String, default: "", trim: true },
+    proofs: { type: [documentSchema], default: [] },
+    submittedAt: { type: Date, default: null },
+    approvedAt: { type: Date, default: null },
+    approvedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
+    receiptNumber: { type: String, default: "", trim: true },
+    receiptType: { type: String, enum: ["official_receipt", "acknowledgement_receipt"], default: "official_receipt" },
+    cashReceived: { type: Number, default: 0, min: 0 },
+    changeAmount: { type: Number, default: 0, min: 0 },
+    source: { type: String, enum: ["online", "cash", "legacy"], default: "online" },
+    archivedAt: { type: Date, default: Date.now },
+}, { _id: true });
 const bookingSchema = new mongoose_1.default.Schema({
     client: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     bookingReference: { type: String, required: true, unique: true, index: true },
@@ -97,6 +120,7 @@ const bookingSchema = new mongoose_1.default.Schema({
             "stored_in_assigned_area",
             "gate_out_requested",
             "gate_out_approved",
+            "gate_out_reversal_requested",
             "completed_gate_out_done",
             "cancelled",
         ],
@@ -143,6 +167,15 @@ const bookingSchema = new mongoose_1.default.Schema({
     billingDays: { type: Number, default: 0 },
     billingComputedAt: { type: Date, default: null },
     paymentAmount: { type: Number, default: 0 },
+    approvedPaymentAmount: { type: Number, default: 0 },
+    paymentCreditAmount: { type: Number, default: 0 },
+    paymentBalanceDue: { type: Number, default: 0 },
+    paymentApplicationStatus: {
+        type: String,
+        enum: ["none", "fully_applied", "partial_credit", "credit_available"],
+        default: "none",
+    },
+    paymentTransactions: { type: [paymentTransactionSchema], default: [] },
     paymentType: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "PaymentType", default: null, index: true },
     paymentTypeSnapshot: { type: paymentTypeSnapshotSchema, default: () => ({}) },
     paymentReferenceNumber: { type: String, default: "", trim: true },
@@ -166,6 +199,14 @@ const bookingSchema = new mongoose_1.default.Schema({
     gateOutApprovedAt: { type: Date, default: null },
     gateOutApprovedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     gateOutRemarks: { type: String, default: "", trim: true },
+    gateOutReversalRequestedAt: { type: Date, default: null },
+    gateOutReversalRequestedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
+    gateOutReversalRequestReason: { type: String, default: "", trim: true },
+    gateOutReversalReviewedAt: { type: Date, default: null },
+    gateOutReversalReviewedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
+    gateOutReversalDecision: { type: String, enum: ["", "approved", "rejected"], default: "" },
+    gateOutReversalAdminRemarks: { type: String, default: "", trim: true },
+    gateOutReversalCount: { type: Number, default: 0 },
     releasedAt: { type: Date, default: null },
     releasedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     releaseRemarks: { type: String, default: "", trim: true },
@@ -193,6 +234,10 @@ bookingSchema.pre("validate", function () {
     this.billingTotal = Math.max(Number(this.billingTotal) || 0, 0);
     this.billingDays = Math.max(Number(this.billingDays) || 0, 0);
     this.paymentAmount = Math.max(Number(this.paymentAmount) || 0, 0);
+    this.approvedPaymentAmount = Math.max(Number(this.approvedPaymentAmount) || 0, 0);
+    this.paymentCreditAmount = Math.max(Number(this.paymentCreditAmount) || 0, 0);
+    this.paymentBalanceDue = Math.max(Number(this.paymentBalanceDue) || 0, 0);
+    this.gateOutReversalCount = Math.max(Number(this.gateOutReversalCount) || 0, 0);
     this.cashReceived = Math.max(Number(this.cashReceived) || 0, 0);
     this.changeAmount = Math.max(Number(this.changeAmount) || 0, 0);
     this.additionalBillingCharges = (this.additionalBillingCharges || []).map((item) => {

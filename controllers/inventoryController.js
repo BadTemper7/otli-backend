@@ -41,7 +41,7 @@ const recalculateBlockOccupancy = async (blockId) => {
         InventoryContainer_js_1.default.find({ block: blockId, status: { $ne: "released" } }).select("containerSize"),
         Booking_js_1.default.find({
             assignedBlock: blockId,
-            status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] },
+            status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"] },
         }).select("containerSize"),
     ]);
     if (!block)
@@ -160,7 +160,7 @@ const safeContainer = (container) => {
 const listInventoryContainers = async (req, res) => {
     const { areaId, status, search } = req.query;
     const query = {};
-    const bookingQuery = { status: { $in: ["gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] } };
+    const bookingQuery = { status: { $in: ["gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"] } };
     if (status && status !== "all")
         query.status = status;
     if (areaId) {
@@ -244,7 +244,7 @@ const assignInventoryContainer = async (req, res) => {
         InventoryContainer_js_1.default.find({ _id: { $ne: container._id }, block: block._id, status: { $ne: "released" } }).select("containerSize bay row tier"),
         Booking_js_1.default.find({
             assignedBlock: block._id,
-            status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved"] },
+            status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"] },
         }).select("containerSize assignedBay assignedRow assignedTier"),
     ]);
     const occupiedKeys = new Set([

@@ -34,6 +34,7 @@ router.get("/bookings/:id", authMiddleware_js_1.verifiedClientOnly, (0, asyncHan
 router.patch("/bookings/:id/resubmit", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.resubmitClientBooking));
 router.post("/bookings/:id/payment", authMiddleware_js_1.verifiedClientOnly, uploadMiddleware_js_1.bookingPaymentUpload, (0, asyncHandler_js_1.default)(bookingController_js_1.submitBookingPayment));
 router.post("/bookings/:id/gate-out-request", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.requestBookingGateOut));
+router.post("/bookings/:id/gate-out-reversal-request", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.requestGateOutReversal));
 router.get("/pre-advices", authMiddleware_js_1.verifiedClientOnly, (0, asyncHandler_js_1.default)(preAdviceController_js_1.listClientPreAdvices));
 router.post("/pre-advices", authMiddleware_js_1.verifiedClientOnly, uploadMiddleware_js_1.preAdviceUpload, (0, asyncHandler_js_1.default)(preAdviceController_js_1.createClientPreAdvice));
 exports.default = router;
