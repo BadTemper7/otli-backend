@@ -14,12 +14,14 @@ const ACTIVE_YARD_STATUSES = [
     "stored_in_assigned_area",
     "gate_out_requested",
     "gate_out_approved",
+    "gate_out_reversal_requested",
 ];
 const CURRENT_INVENTORY_STATUSES = [
     "gate_in_approved",
     "stored_in_assigned_area",
     "gate_out_requested",
     "gate_out_approved",
+    "gate_out_reversal_requested",
 ];
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const emptySizeCounts = () => ({ 20: 0, 40: 0, total: 0 });
@@ -190,6 +192,7 @@ const safeReleaseReport = (report) => {
         booking: report.booking ? String(report.booking?._id || report.booking) : "",
         bookingReference: report.bookingReference,
         bookingNumber: report.bookingNumber || "",
+        recordSource: report.recordSource || "client_booking",
         clientId: client?._id ? String(client._id) : String(report.client || ""),
         clientName: client.companyName || client.name || client.email || "Unknown Client",
         containerNumber: report.containerNumber,
@@ -211,12 +214,22 @@ const getYardContainerReport = async (req, res) => {
     const query = { status: { $in: ACTIVE_YARD_STATUSES } };
     const loadStatus = normalizeKey(req.query.loadStatus);
     const rateType = normalizeKey(req.query.rateType);
+    const recordSource = normalizeKey(req.query.recordSource);
     if (req.query.clientId)
         query.client = req.query.clientId;
     if (["empty", "laden"].includes(loadStatus))
         query.containerLoadStatus = loadStatus;
     if (["local", "international"].includes(rateType))
         query.rateType = rateType;
+    if (recordSource === "client_booking") {
+        query.$and = [
+            ...(query.$and || []),
+            { $or: [{ recordSource: "client_booking" }, { recordSource: { $exists: false } }, { recordSource: "" }] },
+        ];
+    }
+    else if (["admin_manual", "legacy_migration"].includes(recordSource)) {
+        query.recordSource = recordSource;
+    }
     const dateQuery = buildDateQuery(req.query.startDate, req.query.endDate);
     if (dateQuery) {
         query.$or = [
@@ -233,11 +246,20 @@ const getYardContainerReport = async (req, res) => {
         releaseQuery.containerLoadStatus = loadStatus;
     if (["local", "international"].includes(rateType))
         releaseQuery.rateType = rateType;
+    if (recordSource === "client_booking") {
+        releaseQuery.$and = [
+            ...(releaseQuery.$and || []),
+            { $or: [{ recordSource: "client_booking" }, { recordSource: { $exists: false } }, { recordSource: "" }] },
+        ];
+    }
+    else if (["admin_manual", "legacy_migration"].includes(recordSource)) {
+        releaseQuery.recordSource = recordSource;
+    }
     if (dateQuery)
         releaseQuery.releasedAt = dateQuery;
     const [bookings, releaseReports, clientUsers] = await Promise.all([
         Booking_js_1.default.find(query)
-            .select("client containerSize containerLoadStatus rateType status assignedArea assignedBlock inDate storageStartDate assignedAt createdAt")
+            .select("client containerSize containerLoadStatus rateType recordSource status assignedArea assignedBlock inDate storageStartDate assignedAt createdAt")
             .populate("client", "name companyName email")
             .lean(),
         ReleaseReport_js_1.default.find(releaseQuery)
@@ -253,6 +275,7 @@ const getYardContainerReport = async (req, res) => {
     const local = emptySizeCounts();
     let totalTeu = 0;
     let totalFeu = 0;
+    let legacyContainers = 0;
     const revenueByClient = new Map();
     for (const booking of bookings) {
         const size = Number(booking.containerSize) || 20;
@@ -260,6 +283,7 @@ const getYardContainerReport = async (req, res) => {
         addContainer(loadStatus === "empty" ? empty : laden, size);
         if (normalizeRateType(booking.rateType) === "international") addContainer(international, size);
         else addContainer(local, size);
+        if (booking.recordSource === "legacy_migration") legacyContainers += 1;
         totalTeu += getTeu(size);
         totalFeu += getFeu(size);
     }
@@ -293,9 +317,11 @@ const getYardContainerReport = async (req, res) => {
             startDate: req.query.startDate || "",
             endDate: req.query.endDate || "",
             clientId: req.query.clientId || "",
+            recordSource: req.query.recordSource || "",
         },
         report: {
             totalContainersInYard: bookings.length,
+            legacyContainers,
             empty,
             laden,
             international,
@@ -334,7 +360,7 @@ const getOperationsDashboard = async (req, res) => {
             .sort({ releasedAt: 1 })
             .lean(),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
-            .select("containerNumber containerSize status rateType client")
+            .select("containerNumber containerSize status rateType client outDate releasedAt gateOutGracePeriodMinutes")
             .lean(),
         YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots").lean(),
         User_js_1.default.find().select("name email userType role status companyName createdAt").sort({ createdAt: -1 }).limit(10).lean(),
@@ -342,9 +368,17 @@ const getOperationsDashboard = async (req, res) => {
         Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
         Booking_js_1.default.countDocuments({ status: "gate_out_requested" }),
     ]);
-    // A container is considered overstaying once its Gate-Out request has been
-    // approved but the physical release has not yet been completed.
-    const overstayingContainers = currentInventoryBookings.filter((booking) => booking.status === "gate_out_approved").length;
+    const dashboardNow = new Date();
+    const defaultGraceMinutes = Math.max(Number(process.env.GATE_OUT_GRACE_PERIOD_MINUTES ?? 120) || 0, 0);
+    const overstayingContainers = currentInventoryBookings.filter((booking) => {
+        if (!["gate_out_approved", "gate_out_reversal_requested"].includes(booking.status) || booking.releasedAt || !booking.outDate)
+            return false;
+        const scheduledAt = new Date(booking.outDate);
+        if (Number.isNaN(scheduledAt.getTime()))
+            return false;
+        const graceMinutes = Math.max(Number(booking.gateOutGracePeriodMinutes ?? defaultGraceMinutes) || 0, 0);
+        return dashboardNow.getTime() > scheduledAt.getTime() + graceMinutes * 60 * 1000;
+    }).length;
     const localContainers = currentInventoryBookings.filter((booking) => normalizeRateType(booking.rateType) === "local").length;
     const customerTotals = new Map();
     for (const report of periodReleaseReports) {

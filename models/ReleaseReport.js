@@ -7,9 +7,10 @@ const mongoose_1 = __importDefault(require("mongoose"));
 const releaseReportSchema = new mongoose_1.default.Schema({
     reportNumber: { type: String, required: true, unique: true, index: true, trim: true },
     booking: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "Booking", required: true, unique: true, index: true },
-    client: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    client: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null, index: true },
     bookingReference: { type: String, required: true, trim: true, index: true },
     bookingNumber: { type: String, default: "", trim: true },
+    recordSource: { type: String, enum: ["client_booking", "admin_manual", "legacy_migration"], default: "client_booking", index: true },
     containerNumber: { type: String, required: true, uppercase: true, trim: true, index: true },
     containerSize: { type: Number, enum: [20, 40], required: true },
     containerType: { type: String, default: "", trim: true },

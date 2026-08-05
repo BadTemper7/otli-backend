@@ -26,6 +26,8 @@ const listPaymentHistory = async (req, res) => {
         id: payment?._id ? `${booking._id}-${payment._id}` : String(booking._id),
         bookingId: String(booking._id),
         bookingReference: booking.bookingReference,
+        recordSource: booking.recordSource || "client_booking",
+        legacyRegistrationNumber: booking.legacyRegistrationNumber || "",
         containerNumber: booking.containerNumber,
         containerSize: Number(booking.containerSize) || 20,
         containerType: booking.containerType || "",

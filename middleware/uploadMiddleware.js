@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.paymentTypeUpload = exports.bookingPaymentUpload = exports.bookingPreAdviceUpload = exports.preAdviceUpload = exports.clientRegistrationUpload = exports.upload = void 0;
+exports.paymentTypeUpload = exports.legacyContainerUpload = exports.bookingPaymentUpload = exports.bookingPreAdviceUpload = exports.preAdviceUpload = exports.clientRegistrationUpload = exports.upload = void 0;
 const multer_1 = __importDefault(require("multer"));
 const allowedMimeTypes = new Set([
     "application/pdf",
@@ -53,6 +53,7 @@ exports.bookingPaymentUpload = exports.upload.fields([
     { name: "paymentProof", maxCount: 3 },
     { name: "otherDocument", maxCount: 2 },
 ]);
+exports.legacyContainerUpload = exports.upload.single("supportingDocument");
 const paymentTypeImageUpload = (0, multer_1.default)({
     storage,
     fileFilter: (req, file, cb) => {

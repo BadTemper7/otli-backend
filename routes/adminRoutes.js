@@ -70,6 +70,8 @@ router.patch("/bookings/:id/gate-out/approve", (0, authMiddleware_js_1.requirePe
 router.patch("/bookings/:id/gate-out/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateOut));
 router.patch("/bookings/:id/gate-out/reversal/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveGateOutReversal));
 router.patch("/bookings/:id/gate-out/reversal/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectGateOutReversal));
+router.get("/bookings/:id/gate-out/billing-preview", (0, authMiddleware_js_1.requirePermission)("gateOut", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.previewGateOutBilling));
+router.patch("/bookings/:id/gate-out/recompute-billing", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.recomputeGateOutBilling));
 router.patch("/bookings/:id/gate-out/complete", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut));
 router.get("/billing-rates", (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"), (0, asyncHandler_js_1.default)(billingRateController_js_1.listBillingRates));
 router.post("/billing-rates/reference-defaults", (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"), (0, asyncHandler_js_1.default)(billingRateController_js_1.seedReferenceBillingRates));
@@ -98,7 +100,9 @@ router.get("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermissi
 router.post("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock));
 router.patch("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock));
 router.delete("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
+router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
 router.get("/inventory/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryContainers));
+router.post("/inventory/containers/legacy", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
 router.patch("/inventory/containers/:id/assign", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(inventoryController_js_1.assignInventoryContainer));
 router.get("/inventory/summary", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
 router.get("/inventory/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
