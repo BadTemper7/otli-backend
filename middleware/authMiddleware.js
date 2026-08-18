@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requirePermission = exports.superAdminOnly = exports.verifiedClientOnly = exports.clientOnly = exports.adminOnly = exports.protect = exports.CLIENT_VERIFIED_STATUSES = exports.CLIENT_LOGIN_ALLOWED_STATUSES = void 0;
+exports.requireAnyPermission = exports.requirePermission = exports.superAdminOnly = exports.verifiedClientOnly = exports.clientOnly = exports.adminOnly = exports.protect = exports.CLIENT_VERIFIED_STATUSES = exports.CLIENT_LOGIN_ALLOWED_STATUSES = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 const permissions_js_1 = require("../utils/permissions.js");
@@ -98,3 +98,22 @@ const requirePermission = (moduleName, action = "view") => {
     };
 };
 exports.requirePermission = requirePermission;
+const requireAnyPermission = (requirements = []) => {
+    return (req, res, next) => {
+        if (["super_admin", "admin"].includes(req.user?.role))
+            return next();
+        const normalizedPermissions = (0, permissions_js_1.normalizePermissions)(req.user?.permissions || {});
+        const allowed = requirements.some(([moduleName, action = "view"]) => {
+            const permissionModule = (0, permissions_js_1.resolvePermissionModule)(moduleName);
+            return Boolean(normalizedPermissions?.[permissionModule]?.[action]);
+        });
+        if (!allowed) {
+            return res.status(403).json({
+                success: false,
+                message: "Missing permission for this operation.",
+            });
+        }
+        next();
+    };
+};
+exports.requireAnyPermission = requireAnyPermission;

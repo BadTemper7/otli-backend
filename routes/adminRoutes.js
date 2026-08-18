@@ -62,12 +62,14 @@ router.post("/bookings/:id/congestion-surcharge", (0, authMiddleware_js_1.requir
 router.post("/bookings/:id/additional-charges", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.addBookingAdditionalCharge));
 router.delete("/bookings/:id/additional-charges/:chargeId", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBookingAdditionalCharge));
 router.patch("/bookings/:id/relocate", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.relocateBooking));
-router.post("/bookings/:id/payment/cash", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.recordAdminCashPayment));
+router.post("/bookings/:id/payment/cash", (0, authMiddleware_js_1.requireAnyPermission)([["gateIn", "edit"], ["gateOut", "edit"]]), (0, asyncHandler_js_1.default)(bookingController_js_1.recordAdminCashPayment));
 router.patch("/bookings/:id/payment/approve", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingPayment));
 router.patch("/bookings/:id/payment/reject", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingPayment));
 router.patch("/bookings/:id/cancel", (0, authMiddleware_js_1.requirePermission)("operations", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
 router.patch("/bookings/:id/gate-out/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateOut));
 router.patch("/bookings/:id/gate-out/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateOut));
+router.patch("/bookings/:id/gate-out/dates", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateGateOutRequestDates));
+router.patch("/bookings/:id/gate-out/overstay-fee", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.setBookingOverstayFeePolicy));
 router.patch("/bookings/:id/gate-out/reversal/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveGateOutReversal));
 router.patch("/bookings/:id/gate-out/reversal/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectGateOutReversal));
 router.get("/bookings/:id/gate-out/billing-preview", (0, authMiddleware_js_1.requirePermission)("gateOut", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.previewGateOutBilling));
@@ -102,7 +104,7 @@ router.patch("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inv
 router.delete("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
 router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
 router.get("/inventory/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryContainers));
-router.post("/inventory/containers/legacy", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
+router.post("/inventory/containers/legacy", authMiddleware_js_1.superAdminOnly, uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
 router.patch("/inventory/containers/:id/assign", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(inventoryController_js_1.assignInventoryContainer));
 router.get("/inventory/summary", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
 router.get("/inventory/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.assignInventoryContainer = exports.createLegacyInventoryContainer = exports.listInventoryClients = exports.listInventoryContainers = void 0;
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
+const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 const YardArea_js_1 = __importDefault(require("../models/YardArea.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
@@ -85,49 +86,64 @@ const getReservedSlotKeys = ({ bay, row, tier, containerSize, yardContainerSize 
     return keys;
 };
 const getBlockOccupancySnapshot = async (block) => {
-    const [otherInventory, activeBookings] = await Promise.all([
+    const [otherInventory, activeBookings, confirmedPreAdvices] = await Promise.all([
         InventoryContainer_js_1.default.find({ block: block._id, status: { $ne: "released" } }).select("containerSize bay row tier"),
         Booking_js_1.default.find({
             assignedBlock: block._id,
             status: { $in: ["approved_area_assigned", "gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"] },
         }).select("containerSize assignedBay assignedRow assignedTier"),
+        PreAdvice_js_1.default.find({ plannedBlock: block._id, status: "confirmed" }).select("containerSize plannedBay plannedRow plannedTier"),
     ]);
     const occupiedKeys = new Set([
         ...otherInventory.flatMap((item) => getReservedSlotKeys({ bay: item.bay, row: item.row, tier: item.tier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
         ...activeBookings.flatMap((item) => getReservedSlotKeys({ bay: item.assignedBay, row: item.assignedRow, tier: item.assignedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
+        ...confirmedPreAdvices.flatMap((item) => getReservedSlotKeys({ bay: item.plannedBay, row: item.plannedRow, tier: item.plannedTier, containerSize: item.containerSize, yardContainerSize: block.containerSize })),
     ]);
-    const usedCapacity = [...otherInventory, ...activeBookings].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
+    const usedCapacity = [...otherInventory, ...activeBookings, ...confirmedPreAdvices].reduce((total, item) => total + getYardCapacityUsage(item.containerSize, block.containerSize), 0);
     return { occupiedKeys, usedCapacity };
 };
-const findAvailableYardLocation = async ({ area, requestedBlockId = "", containerSize }) => {
-    const query = { area: area._id, status: { $in: ["active", "full"] } };
-    if (requestedBlockId) query._id = requestedBlockId;
-    const blocks = await YardBlock_js_1.default.find(query).sort({ code: 1, name: 1 });
-    const preferred = [...blocks].sort((left, right) => {
-        const leftExact = Number(left.containerSize) === Number(containerSize) ? 0 : 1;
-        const rightExact = Number(right.containerSize) === Number(containerSize) ? 0 : 1;
-        return leftExact - rightExact || String(left.code || left.name || "").localeCompare(String(right.code || right.name || ""));
-    });
-    for (const block of preferred) {
-        const requiredCapacity = getYardCapacityUsage(Number(containerSize), block.containerSize);
-        const { occupiedKeys, usedCapacity } = await getBlockOccupancySnapshot(block);
-        if (usedCapacity + requiredCapacity > Number(block.teuSlots || 0)) continue;
-        const bayCount = Math.max(Number(block.bayCount) || 1, 1);
-        const rowCount = Math.max(Number(block.rowCount) || 1, 1);
-        const tierCount = Math.max(Number(block.tierCount) || 1, 1);
-        for (let tier = 1; tier <= tierCount; tier += 1) {
-            for (let row = 1; row <= rowCount; row += 1) {
-                for (let bay = 1; bay <= bayCount; bay += 1) {
-                    const requestedKeys = getReservedSlotKeys({ bay, row, tier, containerSize: Number(containerSize), yardContainerSize: block.containerSize });
-                    if (requestedKeys.length === 2 && bay + 1 > bayCount) continue;
-                    if (requestedKeys.some((key) => occupiedKeys.has(key))) continue;
-                    return { block, bay, row, tier };
-                }
-            }
-        }
+const validateSelectedYardLocation = async ({ area, blockId, bay, row, tier, containerSize }) => {
+    if (!blockId || !bay || !row || !tier) {
+        throw Object.assign(new Error("Select an available yard block, bay, row, and tier."), { statusCode: 400 });
     }
-    throw Object.assign(new Error("The selected yard area has no available slot for this container size."), { statusCode: 409 });
+    const block = await YardBlock_js_1.default.findById(blockId);
+    if (!block || String(block.area) !== String(area._id)) {
+        throw Object.assign(new Error("The selected yard block does not belong to this yard area."), { statusCode: 404 });
+    }
+    if (!["active", "full"].includes(block.status || "active")) {
+        throw Object.assign(new Error("Containers can only be placed in an active yard block."), { statusCode: 400 });
+    }
+    const nextBay = Math.max(Math.trunc(toNumber(bay, 0)), 1);
+    const nextRow = Math.max(Math.trunc(toNumber(row, 0)), 1);
+    const nextTier = Math.max(Math.trunc(toNumber(tier, 0)), 1);
+    const bayCount = Math.max(Number(block.bayCount) || 1, 1);
+    const rowCount = Math.max(Number(block.rowCount) || 1, 1);
+    const tierCount = Math.max(Number(block.tierCount) || 1, 1);
+    if (nextBay > bayCount || nextRow > rowCount || nextTier > tierCount) {
+        throw Object.assign(new Error(`Location is outside block limits. Max bay ${bayCount}, row ${rowCount}, tier ${tierCount}.`), { statusCode: 400 });
+    }
+    const requestedKeys = getReservedSlotKeys({
+        bay: nextBay,
+        row: nextRow,
+        tier: nextTier,
+        containerSize: Number(containerSize),
+        yardContainerSize: block.containerSize,
+    });
+    if (requestedKeys.length === 2 && nextBay + 1 > bayCount) {
+        throw Object.assign(new Error("A 40ft container needs two adjacent 20ft TEU slots. Select another available slot."), { statusCode: 400 });
+    }
+    const { occupiedKeys, usedCapacity } = await getBlockOccupancySnapshot(block);
+    if (requestedKeys.some((key) => occupiedKeys.has(key))) {
+        throw Object.assign(new Error("The selected yard slot is no longer available. Refresh the available slots and choose another one."), { statusCode: 409 });
+    }
+    const requiredCapacity = getYardCapacityUsage(Number(containerSize), block.containerSize);
+    if (usedCapacity + requiredCapacity > Number(block.teuSlots || 0)) {
+        const unit = Number(block.containerSize) === 20 ? "TEU" : "FEU";
+        throw Object.assign(new Error(`The selected yard block does not have enough available ${unit} capacity.`), { statusCode: 409 });
+    }
+    return { block, bay: nextBay, row: nextRow, tier: nextTier };
 };
+
 const recalculateBlockOccupancy = async (blockId) => {
     if (!blockId)
         return;
@@ -332,11 +348,11 @@ const createLegacyInventoryContainer = async (req, res) => {
         inspectionRemarks,
         gateInConditionOther,
     } = req.body;
-    const required = [containerNumber, containerSize, containerType, containerLoadStatus, rateType, scheduledDateIn, scheduledTimeIn, shippingLine, areaId];
+    const required = [containerNumber, containerSize, containerType, containerLoadStatus, rateType, scheduledDateIn, scheduledTimeIn, shippingLine, areaId, blockId, bay, row, tier];
     if (required.some((value) => !String(value || "").trim())) {
         return res.status(400).json({
             success: false,
-            message: "Complete the required fields: Container Number, Container Size, Type, Load Status, Transaction Classification, Scheduled Date In, Scheduled Time In, Shipping Line, and Yard Area.",
+            message: "Complete the required details and select an available yard slot before registering the container.",
         });
     }
     if (![20, 40].includes(Number(containerSize))) {
@@ -372,10 +388,10 @@ const createLegacyInventoryContainer = async (req, res) => {
     }
     let location;
     try {
-        location = await findAvailableYardLocation({ area, requestedBlockId: blockId || "", containerSize: Number(containerSize) });
+        location = await validateSelectedYardLocation({ area, blockId, bay, row, tier, containerSize: Number(containerSize) });
     }
     catch (error) {
-        return res.status(error.statusCode || 400).json({ success: false, message: error.message || "No available yard location was found." });
+        return res.status(error.statusCode || 400).json({ success: false, message: error.message || "The selected yard slot is unavailable." });
     }
     const block = location.block;
     const nextBay = location.bay;
@@ -561,6 +577,8 @@ const createLegacyInventoryContainer = async (req, res) => {
     });
 };
 exports.createLegacyInventoryContainer = createLegacyInventoryContainer;
+const INVENTORY_LIST_LIMIT = 1000;
+const INVENTORY_QUERY_LIMIT = INVENTORY_LIST_LIMIT + 1;
 const listInventoryContainers = async (req, res) => {
     const { areaId, status, search } = req.query;
     const query = {};
@@ -592,14 +610,14 @@ const listInventoryContainers = async (req, res) => {
             .populate("preAdvice", "preAdviceNumber status")
             .populate("gateIn", "gateInNumber status completedAt")
             .sort({ status: 1, createdAt: -1 })
-            .limit(300),
+            .limit(INVENTORY_QUERY_LIMIT),
         Booking_js_1.default.find(bookingQuery)
             .populate("client", "name email companyName")
             .populate("assignedArea", "name code")
             .populate("assignedBlock", "name code")
             .populate("legacyRegisteredBy", "name")
             .sort({ gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 })
-            .limit(300),
+            .limit(INVENTORY_QUERY_LIMIT),
     ]);
     const combined = [...bookingContainers.map(safeBookingContainer), ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" }))].sort((a, b) => {
         const aWaitingStorage = a.source === "booking" && a.bookingStatus === "gate_in_approved" ? 0 : 1;
@@ -610,7 +628,14 @@ const listInventoryContainers = async (req, res) => {
         const aEnteredAt = new Date(a.inventoryEnteredAt || a.gateInApprovedAt || a.storedAt || a.createdAt || 0).getTime();
         return bEnteredAt - aEnteredAt;
     });
-    return res.json({ success: true, containers: combined });
+    const limited = combined.slice(0, INVENTORY_LIST_LIMIT);
+    return res.json({
+        success: true,
+        containers: limited,
+        limit: INVENTORY_LIST_LIMIT,
+        returned: limited.length,
+        truncated: combined.length > INVENTORY_LIST_LIMIT,
+    });
 };
 exports.listInventoryContainers = listInventoryContainers;
 const assignInventoryContainer = async (req, res) => {

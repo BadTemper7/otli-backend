@@ -175,6 +175,18 @@ const bookingSchema = new mongoose_1.default.Schema({
     storedAt: { type: Date, default: null },
     storedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     storageStartDate: { type: Date, default: null },
+    loloPaymentStage: {
+        type: String,
+        enum: ["gate_in", "gate_out"],
+        default: "gate_in",
+        index: true,
+    },
+    billingStage: {
+        type: String,
+        enum: ["gate_in", "gate_out"],
+        default: "gate_in",
+        index: true,
+    },
     billingLineItems: { type: [billingLineItemSchema], default: [] },
     additionalBillingCharges: { type: [additionalChargeSchema], default: [] },
     billingSubtotal: { type: Number, default: 0 },
@@ -230,6 +242,10 @@ const bookingSchema = new mongoose_1.default.Schema({
         index: true,
     },
     gateOutOverstayStartedAt: { type: Date, default: null },
+    overstayFeeWaived: { type: Boolean, default: false, index: true },
+    overstayFeeWaivedAt: { type: Date, default: null },
+    overstayFeeWaivedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
+    overstayFeeWaiverReason: { type: String, default: "", trim: true },
     gateOutRemarks: { type: String, default: "", trim: true },
     gateOutReversalRequestedAt: { type: Date, default: null },
     gateOutReversalRequestedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
@@ -257,6 +273,7 @@ bookingSchema.pre("validate", function () {
         this.actualContainerNumber = String(this.actualContainerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
     }
     this.rateType = this.rateType === "international" ? "international" : "local";
+    this.loloPaymentStage = this.loloPaymentStage === "gate_out" ? "gate_out" : "gate_in";
     this.assignedBay = Math.max(Number(this.assignedBay) || 1, 1);
     this.assignedRow = Math.max(Number(this.assignedRow) || 1, 1);
     this.assignedTier = Math.max(Number(this.assignedTier) || 1, 1);
