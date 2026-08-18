@@ -798,6 +798,67 @@ const safeBooking = (booking) => {
         updatedAt: doc.updatedAt,
     };
 };
+const bookingTrackingListFields = [
+    "client", "recordSource", "bookingReference", "bookingNumber", "legacyRegistrationNumber",
+    "containerNumber", "containerSize", "containerType", "containerLoadStatus", "rateType", "shippingLine",
+    "status", "billingStatus", "billingTotal", "paymentAmount", "paymentBalanceDue",
+    "assignedArea", "assignedBlock", "assignedBay", "assignedRow", "assignedTier", "assignedSlotNumber",
+    "expectedArrivalDate", "inDate", "outDate", "gateInApprovedAt", "gateInPassNumber",
+    "gateOutApprovedAt", "gateOutPassNumber", "gateOutGracePeriodMinutes", "releasedAt", "createdAt", "updatedAt",
+].join(" ");
+const safeBookingListItem = (booking) => {
+    const doc = booking?.toObject ? booking.toObject() : booking || {};
+    const client = doc.client || {};
+    const area = doc.assignedArea || null;
+    const block = doc.assignedBlock || null;
+    const gateOutSchedule = getGateOutScheduleInfo(doc);
+    return {
+        id: String(doc._id || ""),
+        client: client?._id ? String(client._id) : doc.client ? String(doc.client) : "",
+        recordSource: doc.recordSource || "client_booking",
+        bookingReference: doc.bookingReference || "",
+        bookingNumber: doc.bookingNumber || "",
+        containerNumber: doc.containerNumber || "",
+        containerSize: Number(doc.containerSize) || 0,
+        containerType: doc.containerType || "",
+        containerLoadStatus: doc.containerLoadStatus || "empty",
+        rateType: normalizeRateType(doc.rateType),
+        shippingLine: doc.shippingLine || "",
+        clientName: getClientDisplayName(client),
+        clientEmail: client.email || "",
+        clientPhoneNumber: client.phoneNumber || "",
+        status: doc.status || "",
+        billingStatus: doc.billingStatus || "unpaid",
+        billingTotal: Number(doc.billingTotal) || 0,
+        paymentAmount: Number(doc.paymentAmount) || 0,
+        paymentBalanceDue: Number(doc.paymentBalanceDue ?? doc.paymentAmount) || 0,
+        assignedArea: area?._id ? String(area._id) : doc.assignedArea ? String(doc.assignedArea) : "",
+        assignedAreaName: area?.name || "",
+        assignedAreaCode: area?.code || "",
+        assignedBlock: block?._id ? String(block._id) : doc.assignedBlock ? String(doc.assignedBlock) : "",
+        assignedBlockName: block?.name || "",
+        assignedBlockCode: block?.code || "",
+        assignedBay: Number(doc.assignedBay) || 1,
+        assignedRow: Number(doc.assignedRow) || 1,
+        assignedTier: Number(doc.assignedTier) || 1,
+        assignedSlotNumber: doc.assignedSlotNumber || "",
+        expectedArrivalDate: doc.expectedArrivalDate,
+        inDate: doc.inDate || doc.expectedArrivalDate,
+        outDate: doc.outDate,
+        gateInApprovedAt: doc.gateInApprovedAt,
+        gateInPassNumber: doc.gateInPassNumber || "",
+        gateOutApprovedAt: doc.gateOutApprovedAt,
+        gateOutPassNumber: doc.gateOutPassNumber || "",
+        releasedAt: doc.releasedAt,
+        gateOutGracePeriodMinutes: gateOutSchedule.gracePeriodMinutes,
+        gateOutScheduleStatus: gateOutSchedule.status,
+        gateOutOverstayStartedAt: gateOutSchedule.overstayStartedAt,
+        gateOutOverstayDurationMinutes: gateOutSchedule.overstayDurationMinutes,
+        isOverstaying: gateOutSchedule.isOverstaying,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+    };
+};
 const notifyEmail = async ({ to, subject, title, booking, message, details = [], qrCodeValue = "", trackingUrl = "" }) => {
     if (!to)
         return;
@@ -1413,6 +1474,10 @@ const getClientBooking = async (req, res) => {
 exports.getClientBooking = getClientBooking;
 const listAdminBookings = async (req, res) => {
     const { status, billingStatus, loadStatus, rateType, recordSource, search } = req.query;
+    const requestedPage = Number.parseInt(String(req.query.page || "1"), 10);
+    const requestedLimit = Number.parseInt(String(req.query.limit || "10"), 10);
+    const page = Number.isFinite(requestedPage) ? Math.max(requestedPage, 1) : 1;
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 5), 100) : 10;
     const query = {};
     if (status && status !== "all")
         query.status = status;
@@ -1433,15 +1498,52 @@ const listAdminBookings = async (req, res) => {
         query.recordSource = normalizedRecordSource;
     }
     if (search) {
-        const term = String(search).trim();
-        query.$or = [
-            { bookingReference: { $regex: term, $options: "i" } },
-            { bookingNumber: { $regex: term, $options: "i" } },
-            { legacyRegistrationNumber: { $regex: term, $options: "i" } },
-            { containerNumber: { $regex: term, $options: "i" } },
-            { shippingLine: { $regex: term, $options: "i" } },
-        ];
+        const term = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (term) {
+            const searchConditions = [
+                { bookingReference: { $regex: term, $options: "i" } },
+                { bookingNumber: { $regex: term, $options: "i" } },
+                { legacyRegistrationNumber: { $regex: term, $options: "i" } },
+                { containerNumber: { $regex: term, $options: "i" } },
+                { shippingLine: { $regex: term, $options: "i" } },
+            ];
+            if (query.$or) {
+                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: searchConditions }];
+                delete query.$or;
+            }
+            else {
+                query.$or = searchConditions;
+            }
+        }
     }
+    const isTrackingList = String(req.query.view || "").toLowerCase() === "tracking";
+    if (isTrackingList) {
+        const skip = (page - 1) * limit;
+        const [bookings, totalItems] = await Promise.all([
+            Booking_js_1.default.find(query)
+                .select(bookingTrackingListFields)
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .populate("client", "name email companyName phoneNumber")
+                .populate("assignedArea", "name code")
+                .populate("assignedBlock", "name code")
+                .lean(),
+            Booking_js_1.default.countDocuments(query),
+        ]);
+        const totalPages = Math.max(Math.ceil(totalItems / limit), 1);
+        return res.json({
+            success: true,
+            bookings: bookings.map(safeBookingListItem),
+            pagination: {
+                page: Math.min(page, totalPages),
+                limit,
+                totalItems,
+                totalPages,
+            },
+        });
+    }
+
     const bookings = await populateBooking(Booking_js_1.default.find(query)).sort({ createdAt: -1 }).limit(300);
     await refreshComputedBillingList(bookings);
     return res.json({ success: true, bookings: bookings.map(safeBooking) });
@@ -1455,12 +1557,18 @@ const getAdminBookingCalendar = async (req, res) => {
     const range = buildCalendarDayRange(selectedDate, timezoneOffset);
     if (!range)
         return res.status(400).json({ success: false, message: "Please provide a valid schedule date in YYYY-MM-DD format." });
-    const bookings = await populateBooking(Booking_js_1.default.find({
+    const bookings = await Booking_js_1.default.find({
         inDate: { $gte: range.start, $lt: range.end },
         status: { $nin: ["rejected", "cancelled"] },
         recordSource: { $ne: "legacy_migration" },
-    })).sort({ inDate: 1, createdAt: 1, bookingReference: 1 });
-    const safeBookings = bookings.map(safeBooking);
+    })
+        .select(bookingTrackingListFields)
+        .sort({ inDate: 1, createdAt: 1, bookingReference: 1 })
+        .populate("client", "name email companyName phoneNumber")
+        .populate("assignedArea", "name code")
+        .populate("assignedBlock", "name code")
+        .lean();
+    const safeBookings = bookings.map(safeBookingListItem);
     const grouped = new Map();
     const overflow = [];
     for (const booking of safeBookings) {
@@ -3308,22 +3416,41 @@ const getPublicBookingByNumber = async (req, res) => {
 };
 exports.getPublicBookingByNumber = getPublicBookingByNumber;
 const getBookingSummary = async (req, res) => {
-    const [total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid] = await Promise.all([
-        Booking_js_1.default.countDocuments(),
-        Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
-        Booking_js_1.default.countDocuments({ status: "approved_area_assigned" }),
-        Booking_js_1.default.countDocuments({ status: "gate_in_approved" }),
-        Booking_js_1.default.countDocuments({ status: "stored_in_assigned_area" }),
-        Booking_js_1.default.countDocuments({ status: "gate_out_requested" }),
-        Booking_js_1.default.countDocuments({ status: "gate_out_reversal_requested" }),
-        Booking_js_1.default.countDocuments({ status: "completed_gate_out_done" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "unpaid" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "payment_under_review" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "paid_approved" }),
+    const [result] = await Booking_js_1.default.aggregate([
+        {
+            $group: {
+                _id: null,
+                total: { $sum: 1 },
+                pending: { $sum: { $cond: [{ $eq: ["$status", "pending_admin_approval"] }, 1, 0] } },
+                approved: { $sum: { $cond: [{ $eq: ["$status", "approved_area_assigned"] }, 1, 0] } },
+                gateIn: { $sum: { $cond: [{ $eq: ["$status", "gate_in_approved"] }, 1, 0] } },
+                stored: { $sum: { $cond: [{ $eq: ["$status", "stored_in_assigned_area"] }, 1, 0] } },
+                gateOutRequested: { $sum: { $cond: [{ $eq: ["$status", "gate_out_requested"] }, 1, 0] } },
+                gateOutReversalRequested: { $sum: { $cond: [{ $eq: ["$status", "gate_out_reversal_requested"] }, 1, 0] } },
+                completed: { $sum: { $cond: [{ $eq: ["$status", "completed_gate_out_done"] }, 1, 0] } },
+                rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
+                cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
+                active: {
+                    $sum: {
+                        $cond: [
+                            { $in: ["$status", ["rejected", "cancelled", "completed_gate_out_done"]] },
+                            0,
+                            1,
+                        ],
+                    },
+                },
+                unpaid: { $sum: { $cond: [{ $eq: ["$billingStatus", "unpaid"] }, 1, 0] } },
+                paymentReview: { $sum: { $cond: [{ $eq: ["$billingStatus", "payment_under_review"] }, 1, 0] } },
+                paid: { $sum: { $cond: [{ $eq: ["$billingStatus", "paid_approved"] }, 1, 0] } },
+            },
+        },
     ]);
-    return res.json({
-        success: true,
-        summary: { total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid },
-    });
+    const summary = result || {
+        total: 0, pending: 0, approved: 0, gateIn: 0, stored: 0, gateOutRequested: 0,
+        gateOutReversalRequested: 0, completed: 0, rejected: 0, cancelled: 0, active: 0,
+        unpaid: 0, paymentReview: 0, paid: 0,
+    };
+    delete summary._id;
+    return res.json({ success: true, summary });
 };
 exports.getBookingSummary = getBookingSummary;
