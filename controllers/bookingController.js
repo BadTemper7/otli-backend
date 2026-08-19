@@ -408,6 +408,26 @@ const archiveCurrentApprovedPayment = (booking, { approvedBy = null, source = "l
         return sameReference || sameReceipt || (noIdentifiers && roundMoney(item.amount) === amount);
     });
     if (!alreadyArchived && (amount > 0 || referenceNumber || receiptNumber)) {
+        const lineItemSnapshot = (booking.billingLineItems || []).map((item) => item.toObject ? item.toObject() : { ...item });
+        if (lineItemSnapshot.length === 0 && amount > 0) {
+            const fallbackSubtotal = roundMoney(Number(booking.billingSubtotal) || amount);
+            lineItemSnapshot.push({
+                rate: null,
+                chargeCode: booking.recordSource === "legacy_migration" ? "LEGACY_BILLING_AMOUNT" : "BILLING_AMOUNT",
+                description: booking.recordSource === "legacy_migration"
+                    ? "Historical billing amount from migrated records"
+                    : "Billing amount",
+                unit: "unitemized",
+                quantity: 1,
+                rateAmount: fallbackSubtotal,
+                freeDays: 0,
+                minimumAmount: 0,
+                category: booking.recordSource === "legacy_migration" ? "legacy" : "billing",
+                billingScope: "fallback",
+                rateType: normalizeRateType(booking.rateType),
+                amount: fallbackSubtotal,
+            });
+        }
         booking.paymentTransactions.push({
             amount,
             subtotal: roundMoney(booking.billingSubtotal),
@@ -415,7 +435,7 @@ const archiveCurrentApprovedPayment = (booking, { approvedBy = null, source = "l
             vatRate: Number(booking.vatRate) || 0,
             vatAmount: roundMoney(booking.vatAmount),
             grossTotal: roundMoney(booking.billingTotal),
-            lineItems: (booking.billingLineItems || []).map((item) => item.toObject ? item.toObject() : { ...item }),
+            lineItems: lineItemSnapshot,
             paymentTypeSnapshot: booking.paymentTypeSnapshot || {},
             referenceNumber,
             paymentDate: booking.paymentDate || null,
