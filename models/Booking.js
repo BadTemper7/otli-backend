@@ -267,6 +267,9 @@ bookingSchema.index({ assignedBlock: 1, assignedBay: 1, assignedRow: 1, assigned
 bookingSchema.index({ containerNumber: 1, status: 1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index({ status: 1, createdAt: -1 });
+bookingSchema.index({ status: 1, billingStatus: 1, createdAt: -1 });
+bookingSchema.index({ status: 1, containerLoadStatus: 1, rateType: 1, createdAt: -1 });
+bookingSchema.index({ status: 1, outDate: 1, releasedAt: 1 });
 bookingSchema.index({ billingStatus: 1, createdAt: -1 });
 bookingSchema.index({ recordSource: 1, createdAt: -1 });
 bookingSchema.index({ containerLoadStatus: 1, rateType: 1, createdAt: -1 });
