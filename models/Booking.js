@@ -270,6 +270,8 @@ bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ billingStatus: 1, createdAt: -1 });
 bookingSchema.index({ recordSource: 1, createdAt: -1 });
 bookingSchema.index({ containerLoadStatus: 1, rateType: 1, createdAt: -1 });
+bookingSchema.index({ status: 1, gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 });
+bookingSchema.index({ assignedArea: 1, status: 1, gateInApprovedAt: -1 });
 bookingSchema.pre("validate", function () {
     if (this.containerNumber) {
         this.containerNumber = String(this.containerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
