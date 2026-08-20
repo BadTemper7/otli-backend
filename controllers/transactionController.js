@@ -124,6 +124,7 @@ const listPaymentHistory = async (req, res) => {
         vatRate: Number(payment?.vatRate ?? booking.vatRate) || 0,
         vatAmount: Number(payment?.vatAmount ?? booking.vatAmount) || 0,
         total: Number(payment?.amount ?? booking.billingTotal ?? booking.paymentAmount) || 0,
+        billingStage: payment?.billingStage || ((payment?.lineItems || []).length > 0 && (payment.lineItems || []).every((item) => /^(LIFT_ON|LIFT_OFF)(?:_|$)/.test(String(item.chargeCode || "").toUpperCase())) ? "gate_in" : "gate_out"),
         grossBillingTotal: Number(payment?.grossTotal ?? booking.billingTotal) || 0,
         approvedPaymentAmount: Number(booking.approvedPaymentAmount) || 0,
         paymentCreditAmount: Number(booking.paymentCreditAmount) || 0,

@@ -238,7 +238,6 @@ const adminRoutes = require("./routes/adminRoutes.js").default;
 const clientRoutes = require("./routes/clientRoutes.js").default;
 const {
   getPublicBookingByNumber,
-  cancelExpiredGateInNoShows,
 } = require("./controllers/bookingController.js");
 const asyncHandler = require("./utils/asyncHandler.js").default;
 
@@ -283,22 +282,6 @@ const socketAllowedOrigins = String(
 
 initSocket(httpServer, socketAllowedOrigins);
 
-const GATE_IN_NO_SHOW_CHECK_INTERVAL_MS = Math.max(
-  Number(process.env.GATE_IN_NO_SHOW_CHECK_INTERVAL_MS || 60 * 60 * 1000),
-  60 * 1000,
-);
-
-const runGateInNoShowSweep = async () => {
-  try {
-    const result = await cancelExpiredGateInNoShows();
-    if (result.cancelledCount > 0) {
-      console.log(`🕒 Auto-cancelled ${result.cancelledCount} Gate-In no-show booking(s).`);
-    }
-  } catch (error) {
-    console.error("❌ Gate-In no-show sweep failed:", error.message);
-  }
-};
-
 const startServer = async () => {
   const storagePath = await ensureDocumentsRoot();
   console.log(`📁 Document storage ready: ${storagePath}`);
@@ -308,10 +291,6 @@ const startServer = async () => {
     useUnifiedTopology: true,
   });
   console.log("✅ Connected to MongoDB successfully!");
-
-  await runGateInNoShowSweep();
-  const noShowInterval = setInterval(runGateInNoShowSweep, GATE_IN_NO_SHOW_CHECK_INTERVAL_MS);
-  if (typeof noShowInterval.unref === "function") noShowInterval.unref();
 
   httpServer.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
