@@ -60,5 +60,7 @@ const preAdviceSchema = new mongoose_1.default.Schema({
     reviewedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
 }, { timestamps: true });
 preAdviceSchema.index({ containerNumber: 1, status: 1 });
+preAdviceSchema.index({ status: 1, confirmedAt: -1, createdAt: -1 });
+preAdviceSchema.index({ client: 1, createdAt: -1 });
 preAdviceSchema.index({ plannedBlock: 1, plannedBay: 1, plannedRow: 1, plannedTier: 1, status: 1 });
 exports.default = mongoose_1.default.model("PreAdvice", preAdviceSchema);

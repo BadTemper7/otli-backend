@@ -58,8 +58,8 @@ const statusHistorySchema = new mongoose_1.default.Schema({
     changedAt: { type: Date, default: Date.now },
 }, { _id: false });
 const paymentTransactionSchema = new mongoose_1.default.Schema({
+    paymentStage: { type: String, enum: ["gate_in", "gate_out"], default: "gate_out", index: true },
     amount: { type: Number, default: 0, min: 0 },
-    billingStage: { type: String, enum: ["gate_in", "gate_out"], default: undefined },
     subtotal: { type: Number, default: 0, min: 0 },
     isVatApplicable: { type: Boolean, default: true },
     vatRate: { type: Number, default: 0, min: 0 },
@@ -79,6 +79,9 @@ const paymentTransactionSchema = new mongoose_1.default.Schema({
     cashReceived: { type: Number, default: 0, min: 0 },
     changeAmount: { type: Number, default: 0, min: 0 },
     source: { type: String, enum: ["online", "cash", "legacy"], default: "online" },
+    appliedPaymentCredit: { type: Number, default: 0, min: 0 },
+    appliedGateInPaymentReferences: { type: [String], default: [] },
+    appliedGateInPaymentTransactionIds: { type: [mongoose_1.default.Schema.Types.ObjectId], default: [] },
     archivedAt: { type: Date, default: Date.now },
 }, { _id: true });
 const bookingSchema = new mongoose_1.default.Schema({
@@ -179,7 +182,7 @@ const bookingSchema = new mongoose_1.default.Schema({
     loloPaymentStage: {
         type: String,
         enum: ["gate_in", "gate_out"],
-        default: "gate_in",
+        default: "gate_out",
         index: true,
     },
     billingStage: {
@@ -266,16 +269,12 @@ const bookingSchema = new mongoose_1.default.Schema({
 }, { timestamps: true });
 bookingSchema.index({ assignedBlock: 1, assignedBay: 1, assignedRow: 1, assignedTier: 1, status: 1 });
 bookingSchema.index({ containerNumber: 1, status: 1 });
-bookingSchema.index({ createdAt: -1 });
-bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ status: 1, billingStatus: 1, createdAt: -1 });
-bookingSchema.index({ status: 1, containerLoadStatus: 1, rateType: 1, createdAt: -1 });
-bookingSchema.index({ status: 1, outDate: 1, releasedAt: 1 });
-bookingSchema.index({ billingStatus: 1, createdAt: -1 });
-bookingSchema.index({ recordSource: 1, createdAt: -1 });
-bookingSchema.index({ containerLoadStatus: 1, rateType: 1, createdAt: -1 });
+bookingSchema.index({ client: 1, createdAt: -1 });
+bookingSchema.index({ inDate: 1, status: 1 });
 bookingSchema.index({ status: 1, gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 });
-bookingSchema.index({ assignedArea: 1, status: 1, gateInApprovedAt: -1 });
+bookingSchema.index({ status: 1, outDate: 1, updatedAt: -1 });
+bookingSchema.index({ client: 1, status: 1, createdAt: -1 });
 bookingSchema.pre("validate", function () {
     if (this.containerNumber) {
         this.containerNumber = String(this.containerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
@@ -284,7 +283,7 @@ bookingSchema.pre("validate", function () {
         this.actualContainerNumber = String(this.actualContainerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();
     }
     this.rateType = this.rateType === "international" ? "international" : "local";
-    this.loloPaymentStage = "gate_in";
+    this.loloPaymentStage = this.loloPaymentStage === "gate_in" ? "gate_in" : "gate_out";
     this.assignedBay = Math.max(Number(this.assignedBay) || 1, 1);
     this.assignedRow = Math.max(Number(this.assignedRow) || 1, 1);
     this.assignedTier = Math.max(Number(this.assignedTier) || 1, 1);

@@ -292,6 +292,7 @@ const startServer = async () => {
   });
   console.log("✅ Connected to MongoDB successfully!");
 
+
   httpServer.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
