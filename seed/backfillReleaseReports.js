@@ -9,6 +9,19 @@ const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
 dotenv_1.default.config();
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
+const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+const getPaymentTotal = (booking, stage) => roundMoney((booking.paymentTransactions || [])
+    .filter((item) => item.paymentStage === stage)
+    .reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+const getBillingTotal = (booking, stage) => {
+    const transactions = (booking.paymentTransactions || []).filter((item) => item.paymentStage === stage);
+    const archivedTotal = transactions.length > 0
+        ? Math.max(...transactions.map((item) => Number(item.grossTotal) || Number(item.amount) || 0), 0)
+        : 0;
+    const currentStage = booking.billingStage === "gate_in" ? "gate_in" : "gate_out";
+    const currentTotal = currentStage === stage ? Number(booking.billingTotal) || 0 : 0;
+    return roundMoney(Math.max(archivedTotal, currentTotal));
+};
 const backfillReleaseReports = async () => {
     try {
         if (!process.env.MONGODB_URI)
@@ -24,6 +37,14 @@ const backfillReleaseReports = async () => {
             }
             const releasedAt = booking.releasedAt || booking.outDate || booking.updatedAt || new Date();
             const generatedAt = booking.reportGeneratedAt || releasedAt;
+            const gateInPaymentTotal = getPaymentTotal(booking, "gate_in");
+            const gateOutPaymentTotal = getPaymentTotal(booking, "gate_out");
+            const archivedPaidTotal = roundMoney(gateInPaymentTotal + gateOutPaymentTotal);
+            const legacyPaidFallback = roundMoney(Number(booking.approvedPaymentAmount || booking.paymentAmount || booking.billingTotal) || 0);
+            const totalPaidAmount = archivedPaidTotal > 0 ? archivedPaidTotal : legacyPaidFallback;
+            const gateInBillingTotal = getBillingTotal(booking, "gate_in");
+            const gateOutBillingTotal = getBillingTotal(booking, "gate_out");
+            const totalBillingAmount = roundMoney(gateInBillingTotal + gateOutBillingTotal);
             const releaseReport = await ReleaseReport_js_1.default.findOneAndUpdate({ booking: booking._id }, {
                 $set: {
                     reportNumber: `REL-${booking.bookingReference}`,
@@ -44,7 +65,13 @@ const backfillReleaseReports = async () => {
                     billingSubtotal: Number(booking.billingSubtotal) || 0,
                     vatRate: Number.isFinite(Number(booking.vatRate)) ? Number(booking.vatRate) : 0,
                     vatAmount: Number(booking.vatAmount) || 0,
-                    revenueTotal: Number(booking.billingTotal || booking.paymentAmount) || 0,
+                    gateInBillingTotal,
+                    gateInPaymentTotal,
+                    gateOutBillingTotal,
+                    gateOutPaymentTotal,
+                    totalBillingAmount,
+                    totalPaidAmount,
+                    revenueTotal: totalPaidAmount,
                     paymentReferenceNumber: booking.paymentReferenceNumber || "",
                     paymentDate: booking.paymentDate || booking.paymentReviewedAt || booking.paymentSubmittedAt || null,
                     paymentStatus: booking.billingStatus || "paid_approved",

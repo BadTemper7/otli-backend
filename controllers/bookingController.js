@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.recomputeGateOutBilling = exports.previewGateOutBilling = exports.rejectGateOutReversal = exports.approveGateOutReversal = exports.requestGateOutReversal = exports.cancelBooking = exports.rejectBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingRateClassification = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBookingCalendar = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
+exports.getBookingSummary = exports.getPublicBookingByNumber = exports.relocateBooking = exports.completeBookingGateOut = exports.recomputeGateOutBilling = exports.previewGateOutBilling = exports.rejectGateOutReversal = exports.approveGateOutReversal = exports.requestGateOutReversal = exports.cancelBooking = exports.rejectBookingGateOut = exports.approveBookingGateOut = exports.requestBookingGateOut = exports.updateApprovedPaymentAmount = exports.rejectBookingPayment = exports.approveBookingPayment = exports.recordAdminCashPayment = exports.submitBookingPayment = exports.deleteBookingAdditionalCharge = exports.addBookingCongestionSurcharge = exports.getBookingCongestionSurchargeOption = exports.addBookingAdditionalCharge = exports.updateBookingRateClassification = exports.updateBookingBillingOperation = exports.markBookingStored = exports.rejectBookingGateIn = exports.approveBookingGateIn = exports.updateBookingGateInDetails = exports.rejectBooking = exports.approveBooking = exports.deleteBooking = exports.getAdminBookingCalendar = exports.getAdminBooking = exports.listAdminBookings = exports.getClientBooking = exports.listClientBookings = exports.resubmitClientBooking = exports.createClientBooking = exports.getYardBlockSlots = exports.computeBookingBilling = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
@@ -252,6 +252,13 @@ const validateBookingDateRange = ({ inDate, outDate, expectedArrivalDate }) => {
     return { valid: true, inDate: parsedIn, outDate: parsedOut, days: parsedOut ? getDateRangeDays(parsedIn, parsedOut) : 0 };
 };
 const MAX_CONTAINERS_PER_HOUR = 4;
+const MAX_GATE_OUT_CONTAINERS_PER_HOUR = 3;
+const GATE_OUT_SCHEDULE_STATUSES = [
+    "gate_out_requested",
+    "gate_out_approved",
+    "gate_out_reversal_requested",
+    "completed_gate_out_done",
+];
 const getBookingHourWindow = (value) => {
     const start = parseBookingDate(value);
     if (!start) return null;
@@ -273,6 +280,24 @@ const ensureBookingHourCapacity = async (value, excludeBookingId = null) => {
             month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
         });
         const error = new Error(`The ${displayTime} schedule is full. Operations can accept only ${MAX_CONTAINERS_PER_HOUR} containers per hour.`);
+        error.statusCode = 409;
+        throw error;
+    }
+};
+const ensureGateOutHourCapacity = async (value, excludeBookingId = null) => {
+    const window = getBookingHourWindow(value);
+    if (!window) return;
+    const filter = {
+        outDate: { $gte: window.start, $lt: window.end },
+        status: { $in: GATE_OUT_SCHEDULE_STATUSES },
+    };
+    if (excludeBookingId) filter._id = { $ne: excludeBookingId };
+    const bookedCount = await Booking_js_1.default.countDocuments(filter);
+    if (bookedCount >= MAX_GATE_OUT_CONTAINERS_PER_HOUR) {
+        const displayTime = window.start.toLocaleString("en-PH", {
+            month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+        });
+        const error = new Error(`The ${displayTime} Gate-Out schedule is full. Only ${MAX_GATE_OUT_CONTAINERS_PER_HOUR} containers can be booked per hour.`);
         error.statusCode = 409;
         throw error;
     }
@@ -361,6 +386,49 @@ const shouldApplyBillingRate = (rate, booking) => {
     return true;
 };
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+const getGateInPaymentTotal = (booking = {}) => {
+    return roundMoney((booking.paymentTransactions || []).filter((item) => item.paymentStage === "gate_in").reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+};
+const getGateOutPaymentTotal = (booking = {}) => {
+    return roundMoney((booking.paymentTransactions || []).filter((item) => item.paymentStage === "gate_out").reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+};
+const getLatestGateOutPaymentTransaction = (booking = {}) => {
+    const transactions = (booking.paymentTransactions || []).filter((item) => item.paymentStage === "gate_out");
+    return transactions.length ? transactions[transactions.length - 1] : null;
+};
+const restoreApprovedGateOutBillingSnapshot = (booking) => {
+    const latestPayment = getLatestGateOutPaymentTransaction(booking);
+    const paid = getGateOutPaymentTotal(booking);
+    if (latestPayment && Number(latestPayment.grossTotal || 0) > 0) {
+        booking.billingStage = "gate_out";
+        booking.billingLineItems = (latestPayment.lineItems || []).map((item) => item.toObject ? item.toObject() : { ...item });
+        booking.billingSubtotal = roundMoney(latestPayment.subtotal);
+        booking.isVatApplicable = latestPayment.isVatApplicable !== false;
+        booking.vatRate = Number(latestPayment.vatRate) || 0;
+        booking.vatAmount = roundMoney(latestPayment.vatAmount);
+        booking.billingTotal = roundMoney(latestPayment.grossTotal);
+    }
+    booking.paymentCreditAmount = roundMoney(Math.max(paid - Number(booking.billingTotal || 0), 0));
+    booking.paymentBalanceDue = 0;
+    booking.paymentAmount = 0;
+    booking.paymentApplicationStatus = "fully_applied";
+    booking.billingStatus = "paid_approved";
+    return { paid, lockedGrossTotal: roundMoney(booking.billingTotal), latestPayment };
+};
+const applyGateOutPaymentBalance = (booking, grossTotal) => {
+    const total = roundMoney(grossTotal);
+    const paid = getGateOutPaymentTotal(booking);
+    const balanceDue = roundMoney(Math.max(total - paid, 0));
+    booking.paymentCreditAmount = 0;
+    booking.paymentBalanceDue = balanceDue;
+    booking.paymentAmount = balanceDue;
+    booking.paymentApplicationStatus = paid <= 0
+        ? "none"
+        : balanceDue > 0
+            ? "partial_payment"
+            : "fully_applied";
+    return { paid, balanceDue };
+};
 const getApprovedPaymentAmount = (booking = {}) => {
     const storedAmount = Math.max(Number(booking.approvedPaymentAmount) || 0, 0);
     if (storedAmount > 0)
@@ -408,36 +476,15 @@ const archiveCurrentApprovedPayment = (booking, { approvedBy = null, source = "l
         return sameReference || sameReceipt || (noIdentifiers && roundMoney(item.amount) === amount);
     });
     if (!alreadyArchived && (amount > 0 || referenceNumber || receiptNumber)) {
-        const billingSnapshot = buildPaymentBillingSnapshot(booking);
-        const lineItemSnapshot = [...billingSnapshot.lineItems];
-        if (lineItemSnapshot.length === 0 && amount > 0) {
-            const fallbackSubtotal = roundMoney(Number(billingSnapshot.subtotal) || amount);
-            lineItemSnapshot.push({
-                rate: null,
-                chargeCode: booking.recordSource === "legacy_migration" ? "LEGACY_BILLING_AMOUNT" : "BILLING_AMOUNT",
-                description: booking.recordSource === "legacy_migration"
-                    ? "Historical billing amount from migrated records"
-                    : "Billing amount",
-                unit: "unitemized",
-                quantity: 1,
-                rateAmount: fallbackSubtotal,
-                freeDays: 0,
-                minimumAmount: 0,
-                category: booking.recordSource === "legacy_migration" ? "legacy" : "billing",
-                billingScope: "fallback",
-                rateType: normalizeRateType(booking.rateType),
-                amount: fallbackSubtotal,
-            });
-        }
         booking.paymentTransactions.push({
+            paymentStage: booking.billingStage === "gate_in" ? "gate_in" : "gate_out",
             amount,
-            billingStage: billingSnapshot.billingStage,
-            subtotal: billingSnapshot.subtotal,
+            subtotal: roundMoney(booking.billingSubtotal),
             isVatApplicable: booking.isVatApplicable !== false,
             vatRate: Number(booking.vatRate) || 0,
-            vatAmount: billingSnapshot.vatAmount,
-            grossTotal: billingSnapshot.grossTotal,
-            lineItems: lineItemSnapshot,
+            vatAmount: roundMoney(booking.vatAmount),
+            grossTotal: roundMoney(booking.billingTotal),
+            lineItems: (booking.billingLineItems || []).map((item) => item.toObject ? item.toObject() : { ...item }),
             paymentTypeSnapshot: booking.paymentTypeSnapshot || {},
             referenceNumber,
             paymentDate: booking.paymentDate || null,
@@ -450,6 +497,9 @@ const archiveCurrentApprovedPayment = (booking, { approvedBy = null, source = "l
             receiptType: booking.receiptType || (booking.isVatApplicable === false ? "acknowledgement_receipt" : "official_receipt"),
             cashReceived: Number(booking.cashReceived) || 0,
             changeAmount: Number(booking.changeAmount) || 0,
+            appliedPaymentCredit: 0,
+            appliedGateInPaymentReferences: [],
+            appliedGateInPaymentTransactionIds: [],
             source,
             archivedAt: new Date(),
         });
@@ -481,89 +531,7 @@ const resolveBillingStage = (booking = {}, requestedStage = "auto") => {
     return "gate_in";
 };
 const isLiftOnLiftOffRate = (rate = {}) => /^(LIFT_ON|LIFT_OFF)(?:_|$)/.test(String(rate.chargeCode || "").toUpperCase());
-const isLiftOnLiftOffLineItem = (item = {}) => /^(LIFT_ON|LIFT_OFF)(?:_|$)/.test(String(item.chargeCode || "").toUpperCase());
-const getLoloPaymentStage = () => "gate_in";
-const toBillingLineItemSnapshot = (item = {}) => ({
-    rate: item.rate?._id || item.rate || null,
-    chargeCode: item.chargeCode || "",
-    description: item.description || "",
-    unit: item.unit || "per_container",
-    quantity: Number(item.quantity) || 0,
-    rateAmount: Number(item.rateAmount) || 0,
-    freeDays: Number(item.freeDays) || 0,
-    minimumAmount: Number(item.minimumAmount) || 0,
-    category: item.category || "",
-    billingScope: item.billingScope || "",
-    rateType: normalizeRateType(item.rateType),
-    amount: roundMoney(item.amount),
-});
-const getArchivedGateInBillingSnapshot = (booking = {}) => {
-    if (getLoloPaymentStage(booking) !== "gate_in")
-        return null;
-    const transactions = Array.isArray(booking.paymentTransactions) ? [...booking.paymentTransactions] : [];
-    transactions.sort((left, right) => new Date(left.approvedAt || left.archivedAt || left.paymentDate || 0).getTime() - new Date(right.approvedAt || right.archivedAt || right.paymentDate || 0).getTime());
-    const gateInTransaction = transactions.find((transaction) => {
-        const items = Array.isArray(transaction.lineItems) ? transaction.lineItems : [];
-        if (transaction.billingStage === "gate_in")
-            return items.some(isLiftOnLiftOffLineItem);
-        return items.length > 0 && items.every(isLiftOnLiftOffLineItem);
-    });
-    if (!gateInTransaction)
-        return null;
-    const lineItems = (gateInTransaction.lineItems || []).filter(isLiftOnLiftOffLineItem).map(toBillingLineItemSnapshot);
-    const subtotal = roundMoney(lineItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
-    const transactionVatRate = gateInTransaction.isVatApplicable === false ? 0 : Math.max(Number(gateInTransaction.vatRate) || 0, 0);
-    const storedVatAmount = roundMoney(gateInTransaction.vatAmount);
-    const vatAmount = gateInTransaction.isVatApplicable === false
-        ? 0
-        : storedVatAmount > 0
-            ? storedVatAmount
-            : roundMoney(subtotal * transactionVatRate);
-    return { lineItems, subtotal, vatAmount, grossTotal: roundMoney(subtotal + vatAmount) };
-};
-const buildPaymentBillingSnapshot = (booking = {}) => {
-    const billingStage = booking.billingStage === "gate_in" ? "gate_in" : "gate_out";
-    const currentItems = (booking.billingLineItems || []).map((item) => toBillingLineItemSnapshot(item.toObject ? item.toObject() : item));
-    let lineItems = currentItems;
-    let subtotal = roundMoney(booking.billingSubtotal);
-    let vatAmount = roundMoney(booking.vatAmount);
-    let grossTotal = roundMoney(booking.billingTotal);
-    if (billingStage === "gate_out" && getLoloPaymentStage(booking) === "gate_in") {
-        const gateOutItems = currentItems.filter((item) => !isLiftOnLiftOffLineItem(item));
-        const priorGateOutTransactions = (booking.paymentTransactions || []).filter((transaction) => transaction.billingStage === "gate_out");
-        const priorAmounts = new Map();
-        for (const transaction of priorGateOutTransactions) {
-            for (const item of transaction.lineItems || []) {
-                if (isLiftOnLiftOffLineItem(item))
-                    continue;
-                const key = `${String(item.chargeCode || "").toUpperCase()}|${String(item.description || "").toUpperCase()}|${Number(item.rateAmount) || 0}`;
-                priorAmounts.set(key, roundMoney((priorAmounts.get(key) || 0) + (Number(item.amount) || 0)));
-            }
-        }
-        lineItems = gateOutItems.map((item) => {
-            const key = `${String(item.chargeCode || "").toUpperCase()}|${String(item.description || "").toUpperCase()}|${Number(item.rateAmount) || 0}`;
-            const previousAmount = priorAmounts.get(key) || 0;
-            const remainingAmount = roundMoney(Math.max((Number(item.amount) || 0) - previousAmount, 0));
-            if (remainingAmount <= 0)
-                return null;
-            const rateAmount = Number(item.rateAmount) || 0;
-            return {
-                ...item,
-                amount: remainingAmount,
-                quantity: rateAmount > 0 ? Math.round((remainingAmount / rateAmount) * 100) / 100 : item.quantity,
-            };
-        }).filter(Boolean);
-        const gateOutSubtotal = roundMoney(gateOutItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
-        const priorGateOutSubtotal = roundMoney(priorGateOutTransactions.reduce((sum, transaction) => sum + (Number(transaction.subtotal) || 0), 0));
-        const priorGateOutVat = roundMoney(priorGateOutTransactions.reduce((sum, transaction) => sum + (Number(transaction.vatAmount) || 0), 0));
-        subtotal = roundMoney(Math.max(gateOutSubtotal - priorGateOutSubtotal, 0));
-        const vatRate = booking.isVatApplicable === false ? 0 : Math.max(Number(booking.vatRate) || 0, 0);
-        const gateOutVatTotal = roundMoney(gateOutSubtotal * vatRate);
-        vatAmount = roundMoney(Math.max(gateOutVatTotal - priorGateOutVat, 0));
-        grossTotal = roundMoney(subtotal + vatAmount);
-    }
-    return { billingStage, lineItems, subtotal, vatAmount, grossTotal };
-};
+const getLoloPaymentStage = (booking = {}) => booking.loloPaymentStage === "gate_in" ? "gate_in" : "gate_out";
 const computeBookingBilling = async (booking, { asOf = new Date(), persist = false, useAsOfAsBillingEnd = false, phase = "auto" } = {}) => {
     const effectiveDate = new Date(asOf);
     const billingStage = resolveBillingStage(booking, phase);
@@ -573,14 +541,11 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         effectiveDate: { $lte: effectiveDate },
     }).sort({ sortOrder: 1, chargeCode: 1, effectiveDate: -1, createdAt: -1 });
     const applicableRates = activeRates.filter((rate) => rateMatchesBooking(rate, booking) && shouldApplyBillingRate(rate, booking));
-    const archivedGateInBilling = billingStage === "gate_out" ? getArchivedGateInBillingSnapshot(booking) : null;
-    const archivedGateInLoloItems = archivedGateInBilling?.lineItems || [];
-    const useArchivedGateInLolo = billingStage === "gate_out" && archivedGateInLoloItems.length > 0;
     const stagedRates = billingStage === "gate_in"
         ? getLoloPaymentStage(booking) === "gate_in"
             ? applicableRates.filter(isLiftOnLiftOffRate)
             : []
-        : useArchivedGateInLolo
+        : getLoloPaymentStage(booking) === "gate_in"
             ? applicableRates.filter((rate) => !isLiftOnLiftOffRate(rate))
             : applicableRates;
     const matchedRates = getLatestRateByChargeCode(stagedRates);
@@ -635,17 +600,12 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
             amount: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.rateAmount) || 0))) * 100) / 100,
         }))
         : [];
-    const currentStageLineItems = [...lineItems, ...additionalLineItems];
-    const currentStageSubtotal = Math.round(currentStageLineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
-    const allLineItems = [...archivedGateInLoloItems, ...currentStageLineItems];
+    const allLineItems = [...lineItems, ...additionalLineItems];
     const subtotal = Math.round(allLineItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
     const configuredVatRate = Number(process.env.VAT_RATE ?? 0.12);
     const isVatApplicable = booking.isVatApplicable !== false;
     const vatRate = isVatApplicable && Number.isFinite(configuredVatRate) && configuredVatRate >= 0 ? configuredVatRate : 0;
-    const currentStageVatAmount = Math.round(currentStageSubtotal * vatRate * 100) / 100;
-    const vatAmount = useArchivedGateInLolo
-        ? roundMoney((Number(archivedGateInBilling?.vatAmount) || 0) + currentStageVatAmount)
-        : Math.round(subtotal * vatRate * 100) / 100;
+    const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
     const total = Math.round((subtotal + vatAmount) * 100) / 100;
     const result = {
         billingStage,
@@ -657,7 +617,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         total,
         days: storageDays,
         computedAt: effectiveDate,
-        hasMatchedRates: matchedRates.length > 0 || archivedGateInLoloItems.length > 0,
+        hasMatchedRates: matchedRates.length > 0,
     };
     if (persist) {
         booking.billingStage = billingStage;
@@ -668,7 +628,15 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         booking.billingTotal = total;
         booking.billingDays = storageDays;
         booking.billingComputedAt = effectiveDate;
-        applyApprovedPaymentCredit(booking, total);
+
+        // Gate-In and Gate-Out are separate billing transactions. A Gate-In
+        // LOLO payment must never be deducted from the Gate-Out transaction
+        // because that payment is not part of the Gate-Out breakdown.
+        if (billingStage === "gate_out") {
+            applyGateOutPaymentBalance(booking, total);
+        } else {
+            applyApprovedPaymentCredit(booking, total);
+        }
     }
     return result;
 };
@@ -695,8 +663,10 @@ const refreshComputedBilling = async (booking) => {
     return booking;
 };
 const refreshComputedBillingList = async (bookings = []) => {
-    for (const booking of bookings) {
-        await refreshComputedBilling(booking);
+    const batchSize = 10;
+    for (let index = 0; index < bookings.length; index += batchSize) {
+        const batch = bookings.slice(index, index + batchSize);
+        await Promise.all(batch.map((booking) => refreshComputedBilling(booking)));
     }
     return bookings;
 };
@@ -727,6 +697,23 @@ const populateBooking = (query) => {
         .populate("overstayFeeWaivedBy", "name")
         .populate("legacyRegisteredBy", "name");
 };
+const getGateInBillingTotal = (booking = {}) => {
+    const gateInTransactions = (booking.paymentTransactions || []).filter((item) => item.paymentStage === "gate_in");
+    const archivedTotal = gateInTransactions.length > 0
+        ? Math.max(...gateInTransactions.map((item) => Number(item.grossTotal) || Number(item.amount) || 0), 0)
+        : 0;
+    const currentTotal = resolveBillingStage(booking) === "gate_in" ? Number(booking.billingTotal) || 0 : 0;
+    return roundMoney(Math.max(archivedTotal, currentTotal));
+};
+const getGateOutBillingTotal = (booking = {}) => {
+    const gateOutTransactions = (booking.paymentTransactions || []).filter((item) => item.paymentStage === "gate_out");
+    const archivedTotal = gateOutTransactions.length > 0
+        ? Math.max(...gateOutTransactions.map((item) => Number(item.grossTotal) || Number(item.amount) || 0), 0)
+        : 0;
+    const currentTotal = resolveBillingStage(booking) === "gate_out" ? Number(booking.billingTotal) || 0 : 0;
+    return roundMoney(Math.max(archivedTotal, currentTotal));
+};
+
 const safeBooking = (booking) => {
     const doc = booking.toObject ? booking.toObject() : booking;
     const client = doc.client || {};
@@ -740,6 +727,12 @@ const safeBooking = (booking) => {
     const overstayFeeWaivedBy = doc.overstayFeeWaivedBy || null;
     const legacyRegisteredBy = doc.legacyRegisteredBy || null;
     const gateOutSchedule = getGateOutScheduleInfo(doc);
+    const gateInPaymentTotal = getGateInPaymentTotal(doc);
+    const gateOutPaymentTotal = getGateOutPaymentTotal(doc);
+    const gateInBillingTotal = getGateInBillingTotal(doc);
+    const gateOutBillingTotal = getGateOutBillingTotal(doc);
+    const totalBillingAmount = roundMoney(gateInBillingTotal + gateOutBillingTotal);
+    const totalPaidAmount = roundMoney(gateInPaymentTotal + gateOutPaymentTotal);
     return {
         id: String(doc._id),
         client: client?._id ? String(client._id) : doc.client ? String(doc.client) : "",
@@ -830,6 +823,12 @@ const safeBooking = (booking) => {
         vatRate: Number.isFinite(Number(doc.vatRate)) ? Number(doc.vatRate) : 0.12,
         vatAmount: Number(doc.vatAmount) || 0,
         billingTotal: Number(doc.billingTotal) || 0,
+        gateInPaymentTotal,
+        gateOutPaymentTotal,
+        gateInBillingTotal,
+        gateOutBillingTotal,
+        totalBillingAmount,
+        totalPaidAmount,
         billingDays: Number(doc.billingDays) || 0,
         billingComputedAt: doc.billingComputedAt,
         billingPreviousTotal: Number(doc.billingPreviousTotal) || 0,
@@ -844,8 +843,8 @@ const safeBooking = (booking) => {
         paymentApplicationStatus: doc.paymentApplicationStatus || "none",
         paymentTransactions: (doc.paymentTransactions || []).map((item) => ({
             id: String(item._id),
+            paymentStage: item.paymentStage === "gate_in" ? "gate_in" : "gate_out",
             amount: Number(item.amount) || 0,
-            billingStage: item.billingStage || ((item.lineItems || []).length > 0 && (item.lineItems || []).every(isLiftOnLiftOffLineItem) ? "gate_in" : "gate_out"),
             subtotal: Number(item.subtotal) || 0,
             isVatApplicable: item.isVatApplicable !== false,
             vatRate: Number(item.vatRate) || 0,
@@ -909,83 +908,6 @@ const safeBooking = (booking) => {
         reportGeneratedAt: doc.reportGeneratedAt,
         revenueRecordedAt: doc.revenueRecordedAt,
         statusHistory: doc.statusHistory || [],
-        createdAt: doc.createdAt,
-        updatedAt: doc.updatedAt,
-    };
-};
-const bookingTrackingListFields = [
-    "client", "recordSource", "bookingReference", "bookingNumber", "legacyRegistrationNumber",
-    "containerNumber", "containerSize", "containerType", "containerLoadStatus", "rateType", "shippingLine",
-    "status", "billingStatus", "billingTotal", "paymentAmount", "paymentBalanceDue",
-    "assignedArea", "assignedBlock", "assignedBay", "assignedRow", "assignedTier", "assignedSlotNumber",
-    "expectedArrivalDate", "inDate", "outDate", "gateInApprovedAt", "gateInPassNumber",
-    "gateOutApprovedAt", "gateOutPassNumber", "gateOutGracePeriodMinutes", "releasedAt", "createdAt", "updatedAt",
-].join(" ");
-const bookingWorkflowListFields = [
-    bookingTrackingListFields,
-    "loloPaymentStage", "billingStage", "billingSubtotal", "approvedPaymentAmount",
-    "isVatApplicable", "vatRate", "paymentTypeSnapshot.type", "paymentSubmittedAt", "cashReceived",
-    "paymentProofs.type",
-].join(" ");
-const safeBookingListItem = (booking) => {
-    const doc = booking?.toObject ? booking.toObject() : booking || {};
-    const client = doc.client || {};
-    const area = doc.assignedArea || null;
-    const block = doc.assignedBlock || null;
-    const gateOutSchedule = getGateOutScheduleInfo(doc);
-    return {
-        id: String(doc._id || ""),
-        client: client?._id ? String(client._id) : doc.client ? String(doc.client) : "",
-        recordSource: doc.recordSource || "client_booking",
-        bookingReference: doc.bookingReference || "",
-        bookingNumber: doc.bookingNumber || "",
-        containerNumber: doc.containerNumber || "",
-        containerSize: Number(doc.containerSize) || 0,
-        containerType: doc.containerType || "",
-        containerLoadStatus: doc.containerLoadStatus || "empty",
-        rateType: normalizeRateType(doc.rateType),
-        shippingLine: doc.shippingLine || "",
-        clientName: getClientDisplayName(client),
-        clientEmail: client.email || "",
-        clientPhoneNumber: client.phoneNumber || "",
-        status: doc.status || "",
-        billingStatus: doc.billingStatus || "unpaid",
-        billingSubtotal: Number(doc.billingSubtotal) || 0,
-        billingTotal: Number(doc.billingTotal) || 0,
-        paymentAmount: Number(doc.paymentAmount) || 0,
-        approvedPaymentAmount: Number(doc.approvedPaymentAmount) || 0,
-        paymentBalanceDue: Number(doc.paymentBalanceDue ?? doc.paymentAmount) || 0,
-        loloPaymentStage: getLoloPaymentStage(doc),
-        billingStage: doc.billingStage || resolveBillingStage(doc),
-        isVatApplicable: doc.isVatApplicable !== false,
-        vatRate: Number.isFinite(Number(doc.vatRate)) ? Number(doc.vatRate) : 0.12,
-        paymentTypeSnapshot: doc.paymentTypeSnapshot || {},
-        paymentSubmittedAt: doc.paymentSubmittedAt,
-        cashReceived: Number(doc.cashReceived) || 0,
-        hasExistingOnlinePayment: ["bank", "ewallet"].includes(String(doc.paymentTypeSnapshot?.type || "").trim().toLowerCase()) || (Array.isArray(doc.paymentProofs) && doc.paymentProofs.length > 0),
-        assignedArea: area?._id ? String(area._id) : doc.assignedArea ? String(doc.assignedArea) : "",
-        assignedAreaName: area?.name || "",
-        assignedAreaCode: area?.code || "",
-        assignedBlock: block?._id ? String(block._id) : doc.assignedBlock ? String(doc.assignedBlock) : "",
-        assignedBlockName: block?.name || "",
-        assignedBlockCode: block?.code || "",
-        assignedBay: Number(doc.assignedBay) || 1,
-        assignedRow: Number(doc.assignedRow) || 1,
-        assignedTier: Number(doc.assignedTier) || 1,
-        assignedSlotNumber: doc.assignedSlotNumber || "",
-        expectedArrivalDate: doc.expectedArrivalDate,
-        inDate: doc.inDate || doc.expectedArrivalDate,
-        outDate: doc.outDate,
-        gateInApprovedAt: doc.gateInApprovedAt,
-        gateInPassNumber: doc.gateInPassNumber || "",
-        gateOutApprovedAt: doc.gateOutApprovedAt,
-        gateOutPassNumber: doc.gateOutPassNumber || "",
-        releasedAt: doc.releasedAt,
-        gateOutGracePeriodMinutes: gateOutSchedule.gracePeriodMinutes,
-        gateOutScheduleStatus: gateOutSchedule.status,
-        gateOutOverstayStartedAt: gateOutSchedule.overstayStartedAt,
-        gateOutOverstayDurationMinutes: gateOutSchedule.overstayDurationMinutes,
-        isOverstaying: gateOutSchedule.isOverstaying,
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
     };
@@ -1590,8 +1512,7 @@ const resubmitClientBooking = async (req, res) => {
 };
 exports.resubmitClientBooking = resubmitClientBooking;
 const listClientBookings = async (req, res) => {
-    const bookings = await populateBooking(Booking_js_1.default.find({ client: req.user._id })).sort({ createdAt: -1 });
-    await refreshComputedBillingList(bookings);
+    const bookings = await populateBooking(Booking_js_1.default.find({ client: req.user._id })).sort({ createdAt: -1 }).limit(300).lean();
     return res.json({ success: true, bookings: bookings.map(safeBooking) });
 };
 exports.listClientBookings = listClientBookings;
@@ -1604,35 +1525,12 @@ const getClientBooking = async (req, res) => {
 };
 exports.getClientBooking = getClientBooking;
 const listAdminBookings = async (req, res) => {
-    const { status, billingStatus, loadStatus, rateType, recordSource, search } = req.query;
-    const requestedPage = Number.parseInt(String(req.query.page || "1"), 10);
-    const requestedLimit = Number.parseInt(String(req.query.limit || "10"), 10);
-    const page = Number.isFinite(requestedPage) ? Math.max(requestedPage, 1) : 1;
-    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 5), 100) : 10;
-    const requestedView = String(req.query.view || "").trim().toLowerCase();
-    const isTrackingList = requestedView === "tracking";
-    const isWorkflowList = requestedView === "workflow";
-    const workflowQueue = String(req.query.queue || "").trim().toLowerCase();
-    const workflowStatusMap = {
-        gate_in: ["approved_area_assigned"],
-        gate_out: ["gate_out_requested", "gate_out_approved", "gate_out_reversal_requested", "completed_gate_out_done"],
-        release: ["gate_out_approved", "gate_out_reversal_requested", "completed_gate_out_done"],
-    };
-    const workflowStatuses = workflowStatusMap[workflowQueue] || [];
+    const { status, billingStatus, loadStatus, rateType, recordSource, clientId, search } = req.query;
     const query = {};
-
-    if (isWorkflowList && workflowStatuses.length > 0) {
-        if (status && status !== "all") {
-            query.status = workflowStatuses.includes(String(status)) ? status : { $in: [] };
-        }
-        else {
-            query.status = { $in: workflowStatuses };
-        }
-    }
-    else if (status && status !== "all") {
+    if (clientId && clientId !== "all")
+        query.client = clientId;
+    if (status && status !== "all")
         query.status = status;
-    }
-
     if (billingStatus && billingStatus !== "all")
         query.billingStatus = billingStatus;
     if (["empty", "laden"].includes(String(loadStatus || "").toLowerCase()))
@@ -1650,55 +1548,16 @@ const listAdminBookings = async (req, res) => {
         query.recordSource = normalizedRecordSource;
     }
     if (search) {
-        const term = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (term) {
-            const searchConditions = [
-                { bookingReference: { $regex: term, $options: "i" } },
-                { bookingNumber: { $regex: term, $options: "i" } },
-                { legacyRegistrationNumber: { $regex: term, $options: "i" } },
-                { containerNumber: { $regex: term, $options: "i" } },
-                { shippingLine: { $regex: term, $options: "i" } },
-            ];
-            if (query.$or) {
-                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: searchConditions }];
-                delete query.$or;
-            }
-            else {
-                query.$or = searchConditions;
-            }
-        }
+        const term = String(search).trim();
+        query.$or = [
+            { bookingReference: { $regex: term, $options: "i" } },
+            { bookingNumber: { $regex: term, $options: "i" } },
+            { legacyRegistrationNumber: { $regex: term, $options: "i" } },
+            { containerNumber: { $regex: term, $options: "i" } },
+            { shippingLine: { $regex: term, $options: "i" } },
+        ];
     }
-
-    if (isTrackingList || isWorkflowList) {
-        const skip = (page - 1) * limit;
-        const listFields = isWorkflowList ? bookingWorkflowListFields : bookingTrackingListFields;
-        const [bookings, totalItems] = await Promise.all([
-            Booking_js_1.default.find(query)
-                .select(listFields)
-                .sort({ createdAt: -1 })
-                .skip(skip)
-                .limit(limit)
-                .populate("client", "name email companyName phoneNumber")
-                .populate("assignedArea", "name code")
-                .populate("assignedBlock", "name code")
-                .lean(),
-            Booking_js_1.default.countDocuments(query),
-        ]);
-        const totalPages = Math.max(Math.ceil(totalItems / limit), 1);
-        return res.json({
-            success: true,
-            bookings: bookings.map(safeBookingListItem),
-            pagination: {
-                page: Math.min(page, totalPages),
-                limit,
-                totalItems,
-                totalPages,
-            },
-        });
-    }
-
-    const bookings = await populateBooking(Booking_js_1.default.find(query)).sort({ createdAt: -1 }).limit(300);
-    await refreshComputedBillingList(bookings);
+    const bookings = await populateBooking(Booking_js_1.default.find(query)).sort({ createdAt: -1 }).limit(300).lean();
     return res.json({ success: true, bookings: bookings.map(safeBooking) });
 };
 exports.listAdminBookings = listAdminBookings;
@@ -1707,31 +1566,38 @@ const getAdminBookingCalendar = async (req, res) => {
     const fallbackDate = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}-${String(today.getUTCDate()).padStart(2, "0")}`;
     const selectedDate = String(req.query.date || fallbackDate);
     const timezoneOffset = Number(req.query.timezoneOffset || 0);
+    const stage = String(req.query.stage || "gate_in").trim().toLowerCase() === "gate_out" ? "gate_out" : "gate_in";
+    const clientId = String(req.query.clientId || "").trim();
     const range = buildCalendarDayRange(selectedDate, timezoneOffset);
     if (!range)
         return res.status(400).json({ success: false, message: "Please provide a valid schedule date in YYYY-MM-DD format." });
-    const bookings = await Booking_js_1.default.find({
-        inDate: { $gte: range.start, $lt: range.end },
-        status: { $nin: ["rejected", "cancelled"] },
+    const dateField = stage === "gate_out" ? "outDate" : "inDate";
+    const maxSlotsPerHour = stage === "gate_out" ? MAX_GATE_OUT_CONTAINERS_PER_HOUR : MAX_CONTAINERS_PER_HOUR;
+    const query = {
+        [dateField]: { $gte: range.start, $lt: range.end },
         recordSource: { $ne: "legacy_migration" },
-    })
-        .select(bookingTrackingListFields)
-        .sort({ inDate: 1, createdAt: 1, bookingReference: 1 })
-        .populate("client", "name email companyName phoneNumber")
-        .populate("assignedArea", "name code")
-        .populate("assignedBlock", "name code")
-        .lean();
-    const safeBookings = bookings.map(safeBookingListItem);
+    };
+    if (clientId && clientId !== "all")
+        query.client = clientId;
+    if (stage === "gate_out") {
+        query.status = { $in: GATE_OUT_SCHEDULE_STATUSES };
+    }
+    else {
+        query.status = { $nin: ["rejected", "cancelled"] };
+    }
+    const bookings = await populateBooking(Booking_js_1.default.find(query)).sort({ [dateField]: 1, createdAt: 1, bookingReference: 1 });
+    const safeBookings = bookings.map(safeBooking);
     const grouped = new Map();
     const overflow = [];
     for (const booking of safeBookings) {
-        const hour = getCalendarLocalHour(booking.inDate || booking.expectedArrivalDate, timezoneOffset);
+        const scheduleValue = stage === "gate_out" ? booking.outDate : (booking.inDate || booking.expectedArrivalDate);
+        const hour = getCalendarLocalHour(scheduleValue, timezoneOffset);
         if (hour === null)
             continue;
         if (!grouped.has(hour))
             grouped.set(hour, []);
         const entries = grouped.get(hour);
-        if (entries.length < MAX_CONTAINERS_PER_HOUR) {
+        if (entries.length < maxSlotsPerHour) {
             entries.push(booking);
         }
         else {
@@ -1742,7 +1608,7 @@ const getAdminBookingCalendar = async (req, res) => {
         const rowBookings = grouped.get(hour) || [];
         return {
             hour,
-            slots: Array.from({ length: MAX_CONTAINERS_PER_HOUR }, (_, slotIndex) => ({
+            slots: Array.from({ length: maxSlotsPerHour }, (_, slotIndex) => ({
                 slotNumber: slotIndex + 1,
                 booking: rowBookings[slotIndex] || null,
             })),
@@ -1756,7 +1622,8 @@ const getAdminBookingCalendar = async (req, res) => {
     return res.json({
         success: true,
         date: selectedDate,
-        maxSlotsPerHour: MAX_CONTAINERS_PER_HOUR,
+        stage,
+        maxSlotsPerHour,
         rows,
         summary,
         overflowCount: overflow.length,
@@ -1844,7 +1711,11 @@ const approveBooking = async (req, res) => {
     booking.assignedAt = new Date();
     booking.assignedBy = req.user._id;
     booking.storageStartDate = booking.storageStartDate || booking.inDate || booking.expectedArrivalDate || booking.approvedAt;
-    booking.loloPaymentStage = "gate_in";
+    const requestedLoloPaymentStage = String(req.body.loloPaymentStage || "gate_out").trim().toLowerCase();
+    if (!["gate_in", "gate_out"].includes(requestedLoloPaymentStage)) {
+        return res.status(400).json({ success: false, message: "LOLO payment collection must be set to Gate-In or Gate-Out." });
+    }
+    booking.loloPaymentStage = requestedLoloPaymentStage;
     const assignedToCongestionArea = Boolean(plan.area.isCongestionArea);
     let congestionOption = null;
     if (assignedToCongestionArea) {
@@ -1887,9 +1758,11 @@ const approveBooking = async (req, res) => {
     }
     const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true, phase: "gate_in" });
     addHistory(booking, {
-        remarks: billingResult.hasMatchedRates
-            ? `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. Gate-In LOLO billing is PHP ${billingResult.total.toLocaleString()}. Storage, congestion, and other charges will be computed and collected during Gate-Out.`
-            : `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. Configure matching active Lift On and Lift Off rates before Gate-In payment and approval. Storage and other charges remain payable only at Gate-Out.`,
+        remarks: booking.loloPaymentStage === "gate_out"
+            ? `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. LOLO collection is deferred to Gate-Out. Storage, congestion, and other charges are also payable only at Gate-Out.`
+            : billingResult.hasMatchedRates
+                ? `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. Gate-In LOLO billing is PHP ${billingResult.total.toLocaleString()}. Storage, congestion, and other charges will be computed and collected during Gate-Out.`
+                : `Booking approved and assigned to ${assignedToCongestionArea ? "the designated congestion area" : "a regular yard area"}. Configure matching active Lift On and Lift Off rates before Gate-In payment and approval. Storage and other charges remain payable only at Gate-Out.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -1904,7 +1777,9 @@ const approveBooking = async (req, res) => {
     (0, socket_js_1.emitToAdmins)("yard:slot_reserved", payload);
     (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:approved", payload);
-    await notifyClient(booking, "Booking approved and QR generated", "Your booking was approved. A booking number and QR value have been generated. Use the tracking page to view the latest status.", [
+    await notifyClient(booking, "Booking approved and QR generated", booking.loloPaymentStage === "gate_in"
+        ? "Your booking was approved. A booking number and QR value have been generated. Your Lift On / Lift Off payment must be completed at Gate-In before the container can proceed."
+        : "Your booking was approved. A booking number and QR value have been generated. Use the tracking page to view the latest status.", [
         { label: "Booking Number", value: booking.bookingNumber },
         { label: "Container", value: booking.containerNumber },
         { label: "Driver", value: booking.driverName },
@@ -1916,7 +1791,9 @@ const approveBooking = async (req, res) => {
         qrCodeValue: booking.qrCodeValue,
         trackingUrl: getBookingTrackingUrl(booking.bookingNumber),
     });
-    return res.json({ success: true, message: "Booking approved, yard area assigned, and Gate-In LOLO billing initialized.", booking: payload });
+    return res.json({ success: true, message: booking.loloPaymentStage === "gate_out"
+        ? "Booking approved and yard area assigned. LOLO payment will be collected at Gate-Out."
+        : "Booking approved, yard area assigned, and Gate-In LOLO billing initialized.", booking: payload });
 };
 exports.approveBooking = approveBooking;
 const rejectBooking = async (req, res) => {
@@ -1960,6 +1837,171 @@ const rejectBooking = async (req, res) => {
     return res.json({ success: true, message: "Booking rejected.", booking: payload });
 };
 exports.rejectBooking = rejectBooking;
+const updateBookingGateInDetails = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    if (booking.status !== "approved_area_assigned") {
+        return res.status(400).json({ success: false, message: "Gate-In booking details can only be edited before Gate-In is approved." });
+    }
+    if (["payment_submitted", "payment_under_review"].includes(booking.billingStatus)) {
+        return res.status(409).json({ success: false, message: "Finish the current payment review before changing Gate-In booking details." });
+    }
+
+    const requestedContainerNumber = normalizeContainerNumber(req.body.containerNumber ?? booking.containerNumber);
+    const requestedContainerSize = Number(req.body.containerSize ?? booking.containerSize);
+    const requestedContainerType = String(req.body.containerType ?? booking.containerType).trim().toLowerCase();
+    const requestedLoadStatus = String(req.body.containerLoadStatus ?? booking.containerLoadStatus).trim().toLowerCase();
+    const requestedRateType = String(req.body.rateType ?? booking.rateType).trim().toLowerCase();
+    const requestedInDate = req.body.inDate ?? booking.inDate ?? booking.expectedArrivalDate;
+    const requestedWeight = Number(req.body.weight ?? booking.weight);
+
+    if (!requestedContainerNumber) {
+        return res.status(400).json({ success: false, message: "Container number is required." });
+    }
+    if (![20, 40].includes(requestedContainerSize)) {
+        return res.status(400).json({ success: false, message: "Container size must be 20ft or 40ft." });
+    }
+    if (!["dry", "reefer", "tank", "open_top", "flat_rack"].includes(requestedContainerType)) {
+        return res.status(400).json({ success: false, message: "Select a valid container type." });
+    }
+    if (!["empty", "laden"].includes(requestedLoadStatus)) {
+        return res.status(400).json({ success: false, message: "Container load status must be Empty or Laden." });
+    }
+    if (!["local", "international"].includes(requestedRateType)) {
+        return res.status(400).json({ success: false, message: "Rate classification must be Local or International." });
+    }
+    if (!Number.isFinite(requestedWeight) || requestedWeight <= 0) {
+        return res.status(400).json({ success: false, message: "Container weight must be greater than zero." });
+    }
+
+    const dateRange = validateBookingDateRange({ inDate: requestedInDate, outDate: booking.outDate });
+    if (!dateRange.valid) {
+        return res.status(400).json({ success: false, message: dateRange.message });
+    }
+    try {
+        await ensureBookingHourCapacity(dateRange.inDate, booking._id);
+        if (booking.assignedArea && booking.assignedBlock) {
+            await validateYardAssignment({
+                areaId: booking.assignedArea,
+                blockId: booking.assignedBlock,
+                bay: booking.assignedBay,
+                row: booking.assignedRow,
+                tier: booking.assignedTier,
+                containerSize: requestedContainerSize,
+                bookingId: booking._id,
+            });
+        }
+    }
+    catch (error) {
+        return handleValidationError(error, res);
+    }
+
+    if (requestedContainerNumber !== booking.containerNumber) {
+        const activeDuplicate = await Booking_js_1.default.findOne({
+            _id: { $ne: booking._id },
+            containerNumber: requestedContainerNumber,
+            status: { $nin: TERMINAL_BOOKING_STATUSES },
+        });
+        if (activeDuplicate) {
+            return res.status(409).json({ success: false, message: "This container number already has another active booking." });
+        }
+        const inInventory = await InventoryContainer_js_1.default.findOne({
+            containerNumber: requestedContainerNumber,
+            status: { $ne: "released" },
+        });
+        if (inInventory) {
+            return res.status(409).json({ success: false, message: "This container number is already in active inventory." });
+        }
+    }
+
+    const previousContainerSize = Number(booking.containerSize) || 20;
+    const previousRateType = normalizeRateType(booking.rateType);
+    const previousInDate = booking.inDate || booking.expectedArrivalDate;
+    const previousContainerNumber = booking.containerNumber;
+
+    booking.containerNumber = requestedContainerNumber;
+    booking.containerSize = requestedContainerSize;
+    booking.containerType = requestedContainerType;
+    booking.containerLoadStatus = requestedLoadStatus;
+    booking.rateType = requestedRateType;
+    booking.shippingLine = String(req.body.shippingLine ?? booking.shippingLine ?? "").trim();
+    booking.bookingNumber = String(req.body.bookingNumber ?? booking.bookingNumber ?? "").trim();
+    booking.blNumber = String(req.body.blNumber ?? booking.blNumber ?? "").trim();
+    booking.vesselVoyage = String(req.body.vesselVoyage ?? booking.vesselVoyage ?? "").trim();
+    booking.cargoDescription = String(req.body.cargoDescription ?? booking.cargoDescription ?? "").trim();
+    booking.weight = requestedWeight;
+    booking.inDate = dateRange.inDate;
+    booking.expectedArrivalDate = dateRange.inDate;
+    booking.storageStartDate = dateRange.inDate;
+    booking.truckPlateNumber = String(req.body.truckPlateNumber ?? booking.truckPlateNumber ?? "").trim();
+    booking.driverName = String(req.body.driverName ?? booking.driverName ?? "").trim();
+    booking.driverLicenseNumber = String(req.body.driverLicenseNumber ?? booking.driverLicenseNumber ?? "").trim();
+    booking.hauler = String(req.body.hauler ?? booking.hauler ?? "").trim();
+    booking.clientRemarks = String(req.body.clientRemarks ?? booking.clientRemarks ?? "").trim();
+    if (booking.bookingNumber) {
+        booking.qrCodeValue = `OTLI:BOOKING:${booking.bookingNumber}:${booking.containerNumber}`;
+    }
+
+    const congestionCharge = (booking.additionalBillingCharges || []).find((item) => item.source === "congestion_surcharge");
+    if (congestionCharge && (previousContainerSize !== requestedContainerSize || previousRateType !== requestedRateType)) {
+        const congestionRate = await BillingRate_js_1.default.findOne({
+            status: "active",
+            rateType: requestedRateType,
+            effectiveDate: { $lte: new Date() },
+            billingScope: "display_only",
+            containerSize: String(requestedContainerSize),
+            $or: [
+                { chargeCode: `CONGESTION_${requestedContainerSize}` },
+                { description: { $regex: "congestion", $options: "i" } },
+            ],
+        }).sort({ effectiveDate: -1, createdAt: -1 });
+        if (!congestionRate) {
+            return res.status(400).json({ success: false, message: `Configure an active ${requestedContainerSize}ft ${requestedRateType === "international" ? "International" : "Local"} congestion surcharge before saving these Gate-In changes.` });
+        }
+        congestionCharge.rate = congestionRate._id;
+        congestionCharge.chargeCode = congestionRate.chargeCode;
+        congestionCharge.description = congestionRate.description || "Congestion Surcharge";
+        congestionCharge.quantity = 1;
+        congestionCharge.rateAmount = Number(congestionRate.rateAmount) || 0;
+        congestionCharge.amount = Number(congestionRate.rateAmount) || 0;
+    }
+
+    let billingResult = null;
+    if (getLoloPaymentStage(booking) === "gate_in") {
+        billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true, phase: "gate_in" });
+        if (Number(booking.approvedPaymentAmount || 0) > 0) {
+            booking.billingStatus = Number(booking.paymentBalanceDue || 0) <= 0 ? "paid_approved" : "additional_payment_required";
+        }
+        else if (!["payment_rejected"].includes(booking.billingStatus)) {
+            booking.billingStatus = "unpaid";
+        }
+    }
+
+    addHistory(booking, {
+        billingStatus: booking.billingStatus,
+        remarks: `Super Admin updated Gate-In booking details. Container ${previousContainerNumber} -> ${booking.containerNumber}; size ${previousContainerSize}ft -> ${booking.containerSize}ft; classification ${previousRateType} -> ${booking.rateType}; Gate-In ${previousInDate ? new Date(previousInDate).toLocaleString() : "-"} -> ${booking.inDate.toLocaleString()}${billingResult ? `; Gate-In billing recalculated to PHP ${Number(billingResult.total || 0).toLocaleString()}.` : "."}`,
+        changedBy: req.user._id,
+    });
+    await booking.save();
+    if (booking.assignedBlock)
+        await recalculateBlockOccupancy(booking.assignedBlock);
+    await booking.populate("client", "name email companyName phoneNumber");
+    await booking.populate("assignedArea", "name code isCongestionArea");
+    await booking.populate("assignedBlock", "name code teuSlots occupiedSlots bayCount rowCount tierCount containerSize");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:gate_in_details_updated", payload);
+    (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_in_details_updated", payload);
+    await notifyClient(booking, "Gate-In booking details updated", "A Super Admin updated the Gate-In details for your booking. Please review the latest schedule and container information in Booking History.", [
+        { label: "Container", value: booking.containerNumber },
+        { label: "Container Size", value: `${booking.containerSize}ft` },
+        { label: "Classification", value: booking.rateType === "international" ? "International" : "Local" },
+        { label: "Gate-In Schedule", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
+    ]);
+    return res.json({ success: true, message: "Gate-In booking details updated successfully.", booking: payload });
+};
+exports.updateBookingGateInDetails = updateBookingGateInDetails;
 const approveBookingGateIn = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking)
@@ -1995,8 +2037,10 @@ const approveBookingGateIn = async (req, res) => {
     if (actualContainerNumber !== booking.containerNumber) {
         return res.status(400).json({ success: false, message: "Actual container number must match the approved booking." });
     }
-    if (!booking.truckPlateNumber || !booking.driverName) {
-        return res.status(400).json({ success: false, message: "Truck plate number and driver name must be added in the booking before Gate-In." });
+    const gateInTruckPlateNumber = String(req.body.truckPlateNumber || booking.truckPlateNumber || "").trim();
+    const gateInDriverName = String(req.body.driverName || booking.driverName || "").trim();
+    if (!gateInTruckPlateNumber || !gateInDriverName) {
+        return res.status(400).json({ success: false, message: "Truck plate number and driver name must be added before Gate-In approval." });
     }
     const receivedAt = new Date();
     const gateInConditions = normalizeConditionSelections(req.body.gateInConditions || req.body.conditions);
@@ -2011,13 +2055,15 @@ const approveBookingGateIn = async (req, res) => {
     booking.physicalCondition = buildConditionSummary(booking.gateInConditions, gateInConditionOther);
     booking.sealNumber = req.body.sealNumber || "";
     booking.sealIntact = normalizeYesNo(req.body.sealIntact || booking.sealIntact);
-    booking.truckPlateNumber = booking.truckPlateNumber || req.body.truckPlateNumber || "";
-    booking.driverName = booking.driverName || req.body.driverName || "";
-    booking.driverLicenseNumber = booking.driverLicenseNumber || req.body.driverLicenseNumber || "";
-    booking.hauler = booking.hauler || req.body.hauler || "";
+    booking.truckPlateNumber = gateInTruckPlateNumber;
+    booking.driverName = gateInDriverName;
+    booking.driverLicenseNumber = String(req.body.driverLicenseNumber || booking.driverLicenseNumber || "").trim();
+    booking.hauler = String(req.body.hauler || booking.hauler || "").trim();
     booking.inspectionRemarks = req.body.inspectionRemarks || "";
     addHistory(booking, {
-        remarks: `Gate-In approved under pass ${booking.gateInPassNumber} after LOLO payment verification. Container added to Inventory and is awaiting storage confirmation.`,
+        remarks: loloPaymentStage === "gate_in"
+            ? `Gate-In approved under pass ${booking.gateInPassNumber} after LOLO payment verification. Container added to Inventory and is awaiting storage confirmation.`
+            : `Gate-In approved under pass ${booking.gateInPassNumber}. LOLO payment is deferred to Gate-Out by admin selection. Container added to Inventory and is awaiting storage confirmation.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2030,7 +2076,9 @@ const approveBookingGateIn = async (req, res) => {
     (0, socket_js_1.emitToAdmins)("inventory:container_created", payload);
     (0, socket_js_1.emitToAdmins)("inventory:updated", payload);
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_in_approved", payload);
-    await notifyClient(booking, "Gate-In approved", "Your LOLO payment was verified and the container passed Gate-In inspection. It is now listed in Inventory for storage confirmation.", [
+    await notifyClient(booking, "Gate-In approved", loloPaymentStage === "gate_in"
+        ? "Your LOLO payment was verified and the container passed Gate-In inspection. It is now listed in Inventory for storage confirmation."
+        : "The container passed Gate-In inspection. Your LOLO payment is scheduled for Gate-Out together with storage and other Gate-Out charges.", [
         { label: "Gate-In Pass No.", value: booking.gateInPassNumber },
         { label: "Container", value: booking.containerNumber },
         { label: "Truck Plate", value: booking.truckPlateNumber },
@@ -2095,9 +2143,11 @@ const markBookingStored = async (req, res) => {
     booking.storageStartDate = booking.storageStartDate || booking.inDate || storedAt;
     const billingResult = await (0, exports.computeBookingBilling)(booking, { persist: true, phase: "gate_in" });
     addHistory(booking, {
-        remarks: billingResult?.hasMatchedRates
-            ? `${wasAlreadyStored ? "Stored container Gate-In billing refreshed" : "Container stored in assigned yard location"}. Gate-In LOLO remains PHP ${billingResult.total.toLocaleString()}. Storage and other charges are deferred until Gate-Out.`
-            : "Container stored in the assigned yard location. Configure matching active Lift On and Lift Off rates for Gate-In billing; storage and other charges will be computed at Gate-Out.",
+        remarks: getLoloPaymentStage(booking) === "gate_out"
+            ? `${wasAlreadyStored ? "Stored container billing refreshed" : "Container stored in assigned yard location"}. LOLO, storage, congestion, and other charges are payable at Gate-Out.`
+            : billingResult?.hasMatchedRates
+                ? `${wasAlreadyStored ? "Stored container Gate-In billing refreshed" : "Container stored in assigned yard location"}. Gate-In LOLO remains PHP ${billingResult.total.toLocaleString()}. Storage and other charges are deferred until Gate-Out.`
+                : "Container stored in the assigned yard location. Configure matching active Lift On and Lift Off rates for Gate-In billing; storage and other charges will be computed at Gate-Out.",
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2373,15 +2423,13 @@ const submitBookingPayment = async (req, res) => {
     const isGateInPayment = booking.status === "approved_area_assigned" && getLoloPaymentStage(booking) === "gate_in";
     const isGateOutPayment = ["gate_out_requested", "gate_out_approved"].includes(booking.status) && Boolean(booking.outDate);
     if (!isGateInPayment && !isGateOutPayment) {
-        return res.status(400).json({ success: false, message: "Payment is available for Gate-In LOLO or for the remaining Gate-Out balance after Date Out is submitted." });
+        return res.status(400).json({ success: false, message: getLoloPaymentStage(booking) === "gate_out" && booking.status === "approved_area_assigned" ? "LOLO payment is configured for Gate-Out for this booking. No payment is required at Gate-In." : "Payment is available for Gate-In LOLO when configured for Gate-In, or for the remaining Gate-Out balance after Date Out is submitted." });
     }
     if (["payment_submitted", "payment_under_review"].includes(booking.billingStatus)) {
         return res.status(409).json({ success: false, message: "A payment is already under review for this booking." });
     }
     const paymentStage = isGateInPayment ? "gate_in" : "gate_out";
-    if (paymentStage === "gate_in" && req.body.isVatApplicable !== undefined) {
-        booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable);
-    }
+    booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable);
     const billingResult = await (0, exports.computeBookingBilling)(booking, {
         asOf: isGateOutPayment ? booking.outDate : new Date(),
         persist: true,
@@ -2395,11 +2443,18 @@ const submitBookingPayment = async (req, res) => {
     if (billingResult.total <= 0) {
         return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." });
     }
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
-    if (creditResult.balanceDue <= 0) {
+    const paymentBalanceDue = paymentStage === "gate_out"
+        ? applyGateOutPaymentBalance(booking, billingResult.total).balanceDue
+        : applyApprovedPaymentCredit(booking, billingResult.total).balanceDue;
+    if (paymentBalanceDue <= 0) {
         booking.billingStatus = "paid_approved";
         await booking.save();
-        return res.status(409).json({ success: false, message: "No additional payment is required. The approved payment credit already covers the current bill." });
+        return res.status(409).json({ success: false, message: "No additional payment is required for this billing stage." });
+    }
+    if (paymentStage === "gate_out") {
+        booking.paymentCreditAmount = 0;
+        booking.paymentBalanceDue = paymentBalanceDue;
+        booking.paymentAmount = paymentBalanceDue;
     }
     const requestedPaymentTypeId = String(req.body.paymentTypeId || "").trim();
     if (!requestedPaymentTypeId) {
@@ -2428,8 +2483,8 @@ const submitBookingPayment = async (req, res) => {
     if (Number(booking.approvedPaymentAmount || 0) > 0 || (booking.paymentTransactions || []).length > 0 || booking.billingStatus === "payment_rejected") {
         clearCurrentPaymentSubmission(booking);
     }
-    booking.paymentAmount = creditResult.balanceDue;
-    booking.paymentBalanceDue = creditResult.balanceDue;
+    booking.paymentAmount = paymentBalanceDue;
+    booking.paymentBalanceDue = paymentBalanceDue;
     booking.paymentType = paymentType._id;
     booking.paymentTypeSnapshot = {
         type: paymentType.type,
@@ -2449,7 +2504,9 @@ const submitBookingPayment = async (req, res) => {
     const stageLabel = paymentStage === "gate_in" ? "Gate-In LOLO" : "Gate-Out balance";
     addHistory(booking, {
         billingStatus: "payment_under_review",
-        remarks: `${stageLabel} payment proof submitted by client for PHP ${creditResult.balanceDue.toLocaleString()}. Gross bill PHP ${billingResult.total.toLocaleString()} with PHP ${creditResult.approvedAmount.toLocaleString()} approved payment credit applied.`,
+        remarks: paymentStage === "gate_out"
+            ? `${stageLabel} payment proof submitted by client for PHP ${paymentBalanceDue.toLocaleString()}. Gate-Out gross bill PHP ${billingResult.total.toLocaleString()}. Gate-In LOLO payment remains a separate Gate-In transaction and is not part of the Gate-Out bill.`
+            : `${stageLabel} payment proof submitted by client for PHP ${paymentBalanceDue.toLocaleString()}. Gross bill PHP ${billingResult.total.toLocaleString()} with Gate-In payment credit applied.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2461,7 +2518,7 @@ const submitBookingPayment = async (req, res) => {
     (0, socket_js_1.emitToUser)(req.user._id, "booking:payment_submitted", payload);
     await notifyClient(booking, `${stageLabel} payment submitted`, "Your payment proof was submitted and is now under admin review.", [
         { label: "Reference Number", value: booking.paymentReferenceNumber },
-        { label: "Amount", value: `PHP ${creditResult.balanceDue.toLocaleString()}` },
+        { label: "Amount", value: `PHP ${paymentBalanceDue.toLocaleString()}` },
     ]);
     await notifyAdmin(booking, `${stageLabel} payment submitted for review`, "A client submitted proof of payment for review.", [
         { label: "Client", value: getClientDisplayName(booking.client) },
@@ -2476,7 +2533,29 @@ const recordAdminCashPayment = async (req, res) => {
     const isGateInPayment = booking.status === "approved_area_assigned" && getLoloPaymentStage(booking) === "gate_in";
     const isGateOutPayment = ["gate_out_requested", "gate_out_approved"].includes(booking.status) && Boolean(booking.outDate);
     if (!isGateInPayment && !isGateOutPayment) {
-        return res.status(400).json({ success: false, message: "Cash payment is available for Gate-In LOLO or for the remaining Gate-Out balance after Date Out is submitted." });
+        return res.status(400).json({ success: false, message: getLoloPaymentStage(booking) === "gate_out" && booking.status === "approved_area_assigned" ? "LOLO payment is configured for Gate-Out for this booking. No cash payment is required at Gate-In." : "Cash payment is available for Gate-In LOLO when configured for Gate-In, or for the remaining Gate-Out balance after Date Out is submitted." });
+    }
+    // Gate-In and Gate-Out are separate billing transactions. When a container
+    // reaches Gate-Out, always rebuild the Gate-Out bill so storage is computed
+    // from the storage start date through the requested Gate-Out date/time.
+    // A previous Gate-In LOLO payment is treated only as approved credit and
+    // must never make the Gate-Out transaction appear fully paid by itself.
+    if (isGateOutPayment) {
+        booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable ?? booking.isVatApplicable);
+        const gateOutBilling = await (0, exports.computeBookingBilling)(booking, {
+            asOf: booking.outDate,
+            persist: true,
+            phase: "gate_out",
+        });
+        if (!gateOutBilling.hasMatchedRates || gateOutBilling.total <= 0) {
+            return res.status(400).json({ success: false, message: "Complete Gate-Out Rate Setup before recording the payment." });
+        }
+        // Gate-Out is a separate transaction. Gate-In LOLO payments are never
+        // applied as credit against the Gate-Out bill. The Gate-Out balance
+        // is always the full Gate-Out transaction total.
+        const gateOutBalance = applyGateOutPaymentBalance(booking, gateOutBilling.total).balanceDue;
+        booking.billingStatus = gateOutBalance > 0 ? "unpaid" : "paid_approved";
+        await booking.save();
     }
     if (booking.billingStatus === "paid_approved" && Number(booking.paymentBalanceDue || 0) <= 0) {
         return res.status(409).json({ success: false, message: "This billing stage is already fully paid." });
@@ -2529,9 +2608,7 @@ const recordAdminCashPayment = async (req, res) => {
     if (additionalItems.length > 0) {
         booking.additionalBillingCharges.push(...additionalItems);
     }
-    if (paymentStage === "gate_in" && req.body.isVatApplicable !== undefined) {
-        booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable);
-    }
+    booking.isVatApplicable = ![false, "false", "0", 0, "non_vat"].includes(req.body.isVatApplicable);
     const billingResult = await (0, exports.computeBookingBilling)(booking, {
         asOf: isGateOutPayment ? booking.outDate : new Date(),
         persist: true,
@@ -2542,11 +2619,18 @@ const recordAdminCashPayment = async (req, res) => {
             ? "Configure active Lift On / Lift Off rates before recording Gate-In cash payment."
             : "Complete Rate Setup before recording the cash payment." });
     }
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
-    if (creditResult.balanceDue <= 0) {
+    const paymentBalanceDue = paymentStage === "gate_out"
+        ? applyGateOutPaymentBalance(booking, billingResult.total).balanceDue
+        : applyApprovedPaymentCredit(booking, billingResult.total).balanceDue;
+    if (paymentBalanceDue <= 0) {
         booking.billingStatus = "paid_approved";
         await booking.save();
-        return res.status(409).json({ success: false, message: "No additional cash payment is required. Existing approved payment credit covers the current bill." });
+        return res.status(409).json({ success: false, message: "No additional cash payment is required for this billing stage." });
+    }
+    if (paymentStage === "gate_out") {
+        booking.paymentCreditAmount = 0;
+        booking.paymentBalanceDue = paymentBalanceDue;
+        booking.paymentAmount = paymentBalanceDue;
     }
     const cashQuery = { type: "cash", status: "active" };
     if (req.body.paymentTypeId) cashQuery._id = req.body.paymentTypeId;
@@ -2555,15 +2639,15 @@ const recordAdminCashPayment = async (req, res) => {
         return res.status(400).json({ success: false, message: "No active Cash payment type is configured." });
     }
     const cashReceived = Number(req.body.cashReceived);
-    if (!Number.isFinite(cashReceived) || cashReceived < creditResult.balanceDue) {
-        return res.status(400).json({ success: false, message: `Cash received must be at least PHP ${creditResult.balanceDue.toLocaleString()}.` });
+    if (!Number.isFinite(cashReceived) || cashReceived < paymentBalanceDue) {
+        return res.status(400).json({ success: false, message: `Cash received must be at least PHP ${paymentBalanceDue.toLocaleString()}.` });
     }
-    const changeAmount = Math.round((cashReceived - creditResult.balanceDue) * 100) / 100;
+    const changeAmount = Math.round((cashReceived - paymentBalanceDue) * 100) / 100;
     if (Number(booking.approvedPaymentAmount || 0) > 0 || (booking.paymentTransactions || []).length > 0 || booking.billingStatus === "payment_rejected") {
         clearCurrentPaymentSubmission(booking);
     }
-    booking.paymentAmount = creditResult.balanceDue;
-    booking.paymentBalanceDue = creditResult.balanceDue;
+    booking.paymentAmount = paymentBalanceDue;
+    booking.paymentBalanceDue = paymentBalanceDue;
     booking.paymentType = paymentType._id;
     booking.paymentTypeSnapshot = {
         type: "cash",
@@ -2585,9 +2669,14 @@ const recordAdminCashPayment = async (req, res) => {
     booking.receiptNumber = await buildReceiptNumber(booking.isVatApplicable);
     booking.receiptType = booking.isVatApplicable ? "official_receipt" : "acknowledgement_receipt";
     booking.receiptGeneratedAt = new Date();
-    archiveCurrentApprovedPayment(booking, { approvedBy: req.user._id, source: "cash", amountOverride: creditResult.balanceDue });
-    booking.approvedPaymentAmount = roundMoney(creditResult.approvedAmount + creditResult.balanceDue);
-    applyApprovedPaymentCredit(booking, billingResult.total);
+    archiveCurrentApprovedPayment(booking, { approvedBy: req.user._id, source: "cash", amountOverride: paymentBalanceDue });
+    booking.approvedPaymentAmount = roundMoney((Number(booking.approvedPaymentAmount) || 0) + paymentBalanceDue);
+    if (paymentStage === "gate_out") {
+        booking.paymentCreditAmount = 0;
+        booking.paymentBalanceDue = 0;
+    } else {
+        applyApprovedPaymentCredit(booking, billingResult.total);
+    }
     booking.billingStatus = "paid_approved";
     const addedItemsHistory = additionalItems.length > 0
         ? ` Added ${additionalItems.length} additional item${additionalItems.length === 1 ? "" : "s"} worth PHP ${additionalItems.reduce((sum, item) => sum + item.amount, 0).toLocaleString()}.`
@@ -2609,7 +2698,7 @@ const recordAdminCashPayment = async (req, res) => {
         ? "Your Lift On / Lift Off cash payment was recorded and approved. The container can proceed to Gate-In inspection."
         : "Your cash payment was recorded and approved. Gate-Out processing can continue.", [
         { label: "Payment Reference", value: booking.paymentReferenceNumber },
-        { label: "Amount", value: `PHP ${creditResult.balanceDue.toLocaleString()}` },
+        { label: "Amount", value: `PHP ${paymentBalanceDue.toLocaleString()}` },
         { label: "Total Approved Payment", value: `PHP ${booking.approvedPaymentAmount.toLocaleString()}` },
     ]);
     return res.json({
@@ -2644,7 +2733,13 @@ const approveBookingPayment = async (req, res) => {
     booking.receiptGeneratedAt = new Date();
     archiveCurrentApprovedPayment(booking, { approvedBy: req.user._id, source: "online", amountOverride: approvedInstallment });
     booking.approvedPaymentAmount = roundMoney(previousApprovedAmount + approvedInstallment);
-    applyApprovedPaymentCredit(booking, booking.billingTotal);
+    if (booking.billingStage === "gate_out") {
+        booking.paymentCreditAmount = 0;
+        booking.paymentBalanceDue = 0;
+        booking.paymentAmount = approvedInstallment;
+    } else {
+        applyApprovedPaymentCredit(booking, booking.billingTotal);
+    }
     booking.billingStatus = "paid_approved";
     addHistory(booking, { billingStatus: "paid_approved", remarks: `${req.body.remarks || "Payment approved by admin."} Receipt ${booking.receiptNumber} generated.`, changedBy: req.user._id });
     await booking.save();
@@ -2686,6 +2781,145 @@ const rejectBookingPayment = async (req, res) => {
     return res.json({ success: true, message: "Payment rejected.", booking: payload });
 };
 exports.rejectBookingPayment = rejectBookingPayment;
+const updateApprovedPaymentAmount = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    const transactionId = String(req.params.transactionId || req.body.transactionId || "").trim();
+    const amount = roundMoney(Number(req.body.amount));
+    if (!transactionId)
+        return res.status(400).json({ success: false, message: "Payment transaction is required." });
+    if (!Number.isFinite(Number(req.body.amount)) || amount < 0)
+        return res.status(400).json({ success: false, message: "Payment amount must be zero or greater." });
+    const transaction = booking.paymentTransactions?.id
+        ? booking.paymentTransactions.id(transactionId)
+        : (booking.paymentTransactions || []).find((item) => String(item._id) === transactionId);
+    if (!transaction)
+        return res.status(404).json({ success: false, message: "Approved payment transaction not found." });
+    const paymentStage = transaction.paymentStage === "gate_in" ? "gate_in" : "gate_out";
+    if (req.body.paymentStage && String(req.body.paymentStage) !== paymentStage) {
+        return res.status(400).json({ success: false, message: "Payment stage does not match the selected transaction." });
+    }
+    const previousAmount = roundMoney(transaction.amount);
+    const reason = String(req.body.reason || "").trim();
+    transaction.amount = amount;
+    if (String(transaction.source || "").toLowerCase() === "cash") {
+        const previousCashReceived = roundMoney(transaction.cashReceived);
+        transaction.cashReceived = roundMoney(Math.max(previousCashReceived, amount));
+        transaction.changeAmount = roundMoney(Math.max(transaction.cashReceived - amount, 0));
+    }
+
+    const gateInPaid = getGateInPaymentTotal(booking);
+    const gateOutPaid = getGateOutPaymentTotal(booking);
+    booking.approvedPaymentAmount = roundMoney(gateInPaid + gateOutPaid);
+    const hasPendingPayment = ["payment_submitted", "payment_under_review"].includes(booking.billingStatus);
+    let balanceDue = Number(booking.paymentBalanceDue || 0);
+    let billingTotal = 0;
+
+    if (paymentStage === "gate_out") {
+        billingTotal = getGateOutBillingTotal(booking);
+        balanceDue = roundMoney(Math.max(billingTotal - gateOutPaid, 0));
+        const creditBalance = roundMoney(Math.max(gateOutPaid - billingTotal, 0));
+        booking.paymentCreditAmount = creditBalance;
+        booking.paymentBalanceDue = balanceDue;
+        if (!hasPendingPayment)
+            booking.paymentAmount = balanceDue;
+        booking.paymentApplicationStatus = gateOutPaid <= 0
+            ? "none"
+            : balanceDue > 0
+                ? "partial_payment"
+                : creditBalance > 0
+                    ? "credit_available"
+                    : "fully_applied";
+        if (!hasPendingPayment) {
+            booking.billingStatus = balanceDue <= 0
+                ? "paid_approved"
+                : gateOutPaid > 0
+                    ? "additional_payment_required"
+                    : "unpaid";
+        }
+    }
+    else {
+        billingTotal = getGateInBillingTotal(booking);
+        const gateOutWorkflowStarted = ["gate_out_requested", "gate_out_approved", "gate_out_reversal_requested", "completed_gate_out_done"].includes(booking.status);
+        if (!gateOutWorkflowStarted && getLoloPaymentStage(booking) === "gate_in") {
+            balanceDue = roundMoney(Math.max(billingTotal - gateInPaid, 0));
+            const creditBalance = roundMoney(Math.max(gateInPaid - billingTotal, 0));
+            booking.paymentCreditAmount = creditBalance;
+            booking.paymentBalanceDue = balanceDue;
+            if (!hasPendingPayment)
+                booking.paymentAmount = balanceDue;
+            booking.paymentApplicationStatus = gateInPaid <= 0
+                ? "none"
+                : balanceDue > 0
+                    ? "partial_payment"
+                    : creditBalance > 0
+                        ? "credit_available"
+                        : "fully_applied";
+            if (!hasPendingPayment) {
+                booking.billingStatus = balanceDue <= 0
+                    ? "paid_approved"
+                    : gateInPaid > 0
+                        ? "additional_payment_required"
+                        : "unpaid";
+            }
+        }
+    }
+
+    const stageLabel = paymentStage === "gate_in" ? "Gate-In" : "Gate-Out";
+    const referenceLabel = transaction.referenceNumber ? ` (${transaction.referenceNumber})` : "";
+    addHistory(booking, {
+        billingStatus: booking.billingStatus,
+        remarks: `Super Admin adjusted ${stageLabel} payment${referenceLabel} from PHP ${previousAmount.toLocaleString()} to PHP ${amount.toLocaleString()}.${reason ? ` Note: ${reason}` : ""}${paymentStage === "gate_out" || !["gate_out_requested", "gate_out_approved", "gate_out_reversal_requested", "completed_gate_out_done"].includes(booking.status) ? ` Remaining ${stageLabel} balance PHP ${Math.max(balanceDue, 0).toLocaleString()}.` : ""}`,
+        changedBy: req.user._id,
+    });
+    await booking.save();
+
+    let releaseReport = null;
+    if (booking.releaseReport || booking.status === "completed_gate_out_done") {
+        const gateInBillingTotal = getGateInBillingTotal(booking);
+        const gateOutBillingTotal = getGateOutBillingTotal(booking);
+        const totalPaidAmount = roundMoney(gateInPaid + gateOutPaid);
+        releaseReport = await ReleaseReport_js_1.default.findOneAndUpdate({ booking: booking._id }, {
+            $set: {
+                gateInBillingTotal,
+                gateInPaymentTotal: gateInPaid,
+                gateOutBillingTotal,
+                gateOutPaymentTotal: gateOutPaid,
+                totalBillingAmount: roundMoney(gateInBillingTotal + gateOutBillingTotal),
+                totalPaidAmount,
+                revenueTotal: totalPaidAmount,
+                paymentStatus: booking.billingStatus,
+            },
+        }, { new: true });
+    }
+
+    await booking.populate("client", "name email companyName phoneNumber");
+    await booking.populate("assignedArea", "name code isCongestionArea");
+    await booking.populate("assignedBlock", "name code");
+    const payload = safeBooking(booking);
+    (0, socket_js_1.emitToAdmins)("booking:payment_amount_updated", payload);
+    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:payment_amount_updated", payload);
+    if (releaseReport) {
+        (0, socket_js_1.emitToAdmins)("report:updated", {
+            booking: payload,
+            reportId: String(releaseReport._id),
+            reportNumber: releaseReport.reportNumber,
+            revenue: Number(releaseReport.revenueTotal) || 0,
+        });
+    }
+    return res.json({
+        success: true,
+        message: `${stageLabel} payment updated from PHP ${previousAmount.toLocaleString()} to PHP ${amount.toLocaleString()}.${balanceDue > 0 ? ` Remaining balance: PHP ${balanceDue.toLocaleString()}.` : " Payment is fully covered."}`,
+        booking: payload,
+        releaseReport: releaseReport ? {
+            id: String(releaseReport._id),
+            reportNumber: releaseReport.reportNumber,
+            revenueTotal: Number(releaseReport.revenueTotal) || 0,
+        } : null,
+    });
+};
+exports.updateApprovedPaymentAmount = updateApprovedPaymentAmount;
 const requestBookingGateOut = async (req, res) => {
     const booking = await Booking_js_1.default.findOne({ _id: req.params.id, client: req.user._id });
     if (!booking)
@@ -2700,6 +2934,12 @@ const requestBookingGateOut = async (req, res) => {
     if (!gateOutDate.valid) {
         return res.status(400).json({ success: false, message: gateOutDate.message });
     }
+    try {
+        await ensureGateOutHourCapacity(gateOutDate.outDate, booking._id);
+    }
+    catch (error) {
+        return handleValidationError(error, res);
+    }
     booking.outDate = gateOutDate.outDate;
     const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: gateOutDate.outDate, persist: true, phase: "gate_out" });
     if (!billingResult.hasMatchedRates) {
@@ -2708,8 +2948,13 @@ const requestBookingGateOut = async (req, res) => {
     if (billingResult.total <= 0) {
         return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." });
     }
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
-    booking.billingStatus = creditResult.balanceDue <= 0 ? "paid_approved" : "unpaid";
+    // Gate-Out is a new transaction. Do not deduct the previously paid
+    // Gate-In LOLO amount; the Gate-Out balance is the full Gate-Out bill.
+    const gateOutBalanceDue = roundMoney(billingResult.total);
+    booking.paymentCreditAmount = 0;
+    booking.paymentBalanceDue = gateOutBalanceDue;
+    booking.paymentAmount = gateOutBalanceDue;
+    booking.billingStatus = "unpaid";
     booking.status = "gate_out_requested";
     booking.gateOutGracePeriodMinutes = getGateOutGracePeriodMinutes(booking);
     booking.gateOutScheduleStatus = "scheduled";
@@ -2717,7 +2962,7 @@ const requestBookingGateOut = async (req, res) => {
     booking.gateOutRequestedAt = new Date();
     booking.gateOutRequestRemarks = req.body.remarks || "";
     addHistory(booking, {
-        remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. Previously approved Gate-In LOLO payment is applied as credit to the final Gate-Out bill. Gross bill PHP ${billingResult.total.toLocaleString()}, approved payment credit PHP ${creditResult.approvedAmount.toLocaleString()}, balance due PHP ${creditResult.balanceDue.toLocaleString()}, using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`,
+        remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. ${getLoloPaymentStage(booking) === "gate_out" ? "LOLO is collected in this Gate-Out bill together with storage and other charges." : "Previously approved Gate-In LOLO payment remains a separate Gate-In transaction and is not deducted from the Gate-Out bill."} Gross Gate-Out bill PHP ${billingResult.total.toLocaleString()}, Gate-Out balance due PHP ${gateOutBalanceDue.toLocaleString()}, using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2727,14 +2972,11 @@ const requestBookingGateOut = async (req, res) => {
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_out_requested", payload);
     (0, socket_js_1.emitToUser)(req.user._id, "booking:gate_out_requested", payload);
-    await notifyClient(booking, "Gate-out date submitted", creditResult.balanceDue <= 0
-        ? "Your Date Out was submitted. The approved payment credit covers the current final bill."
-        : "Your Date Out was submitted and the remaining balance is ready for payment.", [
+    await notifyClient(booking, "Gate-out date submitted", "Your Date Out was submitted. The Gate-Out transaction is billed separately, including applicable storage and other Gate-Out charges. Any Gate-In LOLO payment remains recorded under the separate Gate-In transaction.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
-        { label: "Gross Bill", value: `PHP ${booking.billingTotal.toLocaleString()}` },
-        { label: "Approved Payment Credit", value: `PHP ${creditResult.approvedAmount.toLocaleString()}` },
-        { label: "Balance Due", value: `PHP ${creditResult.balanceDue.toLocaleString()}` },
+        { label: "Gate-Out Gross Bill", value: `PHP ${booking.billingTotal.toLocaleString()}` },
+        { label: "Gate-Out Balance Due", value: `PHP ${gateOutBalanceDue.toLocaleString()}` },
     ]);
     await notifyAdmin(booking, "Gate-out requested", "A client has submitted Date Out and requested gate-out release.", [
         { label: "Client", value: getClientDisplayName(booking.client) },
@@ -2743,9 +2985,7 @@ const requestBookingGateOut = async (req, res) => {
     ]);
     return res.json({
         success: true,
-        message: creditResult.balanceDue <= 0
-            ? "Gate-out request submitted. Existing approved payment credit covers the final bill."
-            : "Gate-out request submitted. Final billing is ready for the remaining payment.",
+        message: "Gate-out request submitted. The separate Gate-Out transaction, including applicable storage charges, is ready for payment.",
         booking: payload,
     });
 };
@@ -2922,12 +3162,12 @@ const approveGateOutReversal = async (req, res) => {
     booking.gateOutReversalAdminRemarks = String(req.body.remarks || "").trim().slice(0, 500);
     booking.gateOutReversalCount = Number(booking.gateOutReversalCount || 0) + 1;
     const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: new Date(), persist: true });
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
-    booking.billingStatus = creditResult.balanceDue <= 0 ? "paid_approved" : "unpaid";
+    const creditResult = applyGateOutPaymentBalance(booking, billingResult.total);
+    booking.billingStatus = creditResult.balanceDue <= 0 ? "paid_approved" : creditResult.paid > 0 ? "additional_payment_required" : "unpaid";
     addHistory(booking, {
         status: "stored_in_assigned_area",
         billingStatus: booking.billingStatus,
-        remarks: `Gate-Out reversal approved. Container returned to storage. Approved payment credit PHP ${creditResult.approvedAmount.toLocaleString()} preserved; current gross bill PHP ${billingResult.total.toLocaleString()}; balance due PHP ${creditResult.balanceDue.toLocaleString()}.${booking.gateOutReversalAdminRemarks ? ` Admin remarks: ${booking.gateOutReversalAdminRemarks}` : ""}`,
+        remarks: `Gate-Out reversal approved. Container returned to storage. Previously collected Gate-Out payment PHP ${creditResult.paid.toLocaleString()} preserved; current gross bill PHP ${billingResult.total.toLocaleString()}; balance due PHP ${creditResult.balanceDue.toLocaleString()}.${booking.gateOutReversalAdminRemarks ? ` Admin remarks: ${booking.gateOutReversalAdminRemarks}` : ""}`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2941,7 +3181,7 @@ const approveGateOutReversal = async (req, res) => {
     (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_out_reversal_approved", payload);
     await notifyClient(booking, "Gate-Out reversal approved", "The incorrect Gate-Out was cancelled and your container was returned to storage. Storage billing has resumed and the approved payment remains available as credit for this booking.", [
         { label: "Container", value: booking.containerNumber },
-        { label: "Approved Payment Credit", value: `PHP ${creditResult.approvedAmount.toLocaleString()}` },
+        { label: "Gate-Out Payment Already Collected", value: `PHP ${creditResult.paid.toLocaleString()}` },
         { label: "Current Balance Due", value: `PHP ${creditResult.balanceDue.toLocaleString()}` },
         { label: "Assigned Slot", value: booking.assignedSlotNumber || "Retained" },
     ], { notificationType: "gate_out_reversal_approved" });
@@ -3010,6 +3250,7 @@ const updateGateOutRequestDates = async (req, res) => {
     }
     try {
         await ensureBookingHourCapacity(parsedIn, booking._id);
+        await ensureGateOutHourCapacity(parsedOut, booking._id);
     }
     catch (error) {
         return handleValidationError(error, res);
@@ -3032,7 +3273,7 @@ const updateGateOutRequestDates = async (req, res) => {
     if (!billingResult.hasMatchedRates || billingResult.total <= 0) {
         return res.status(400).json({ success: false, message: "No active billing rate matched the corrected dates. Review Rate Setup before saving." });
     }
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
+    const creditResult = applyGateOutPaymentBalance(booking, billingResult.total);
     booking.billingPreviousTotal = previousTotal;
     booking.billingRecomputedAt = new Date();
     booking.billingRecomputedBy = req.user._id;
@@ -3040,7 +3281,7 @@ const updateGateOutRequestDates = async (req, res) => {
     booking.billingRecomputeCount = Number(booking.billingRecomputeCount || 0) + 1;
     booking.billingStatus = creditResult.balanceDue <= 0
         ? "paid_approved"
-        : creditResult.approvedAmount > 0
+        : creditResult.paid > 0
             ? "additional_payment_required"
             : "unpaid";
     addHistory(booking, {
@@ -3098,7 +3339,7 @@ const setBookingOverstayFeePolicy = async (req, res) => {
         useAsOfAsBillingEnd: !waive && schedule.isOverstaying,
         phase: "gate_out",
     });
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
+    const creditResult = applyGateOutPaymentBalance(booking, billingResult.total);
     booking.billingPreviousTotal = previousTotal;
     booking.billingRecomputedAt = serverTime;
     booking.billingRecomputedBy = req.user._id;
@@ -3108,7 +3349,7 @@ const setBookingOverstayFeePolicy = async (req, res) => {
     booking.gateOutOverstayStartedAt = schedule.overstayStartedAt;
     booking.billingStatus = creditResult.balanceDue <= 0
         ? "paid_approved"
-        : creditResult.approvedAmount > 0
+        : creditResult.paid > 0
             ? "additional_payment_required"
             : "unpaid";
     addHistory(booking, {
@@ -3220,7 +3461,7 @@ const recomputeGateOutBilling = async (req, res) => {
     }
     const previousTotal = roundMoney(booking.billingTotal);
     const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: serverTime, persist: true, useAsOfAsBillingEnd: true, phase: "gate_out" });
-    const creditResult = applyApprovedPaymentCredit(booking, billingResult.total);
+    const creditResult = applyGateOutPaymentBalance(booking, billingResult.total);
     booking.billingPreviousTotal = previousTotal;
     booking.billingRecomputedAt = serverTime;
     booking.billingRecomputedBy = req.user._id;
@@ -3231,7 +3472,7 @@ const recomputeGateOutBilling = async (req, res) => {
     booking.billingStatus = creditResult.balanceDue > 0 ? "additional_payment_required" : "paid_approved";
     addHistory(booking, {
         billingStatus: booking.billingStatus,
-        remarks: `Overstay billing recomputed using server time ${serverTime.toLocaleString()}. Previous gross bill PHP ${previousTotal.toLocaleString()}, recomputed gross bill PHP ${billingResult.total.toLocaleString()}, approved payment credit PHP ${creditResult.approvedAmount.toLocaleString()}, balance due PHP ${creditResult.balanceDue.toLocaleString()}.`,
+        remarks: `Overstay billing recomputed using server time ${serverTime.toLocaleString()}. Previous gross bill PHP ${previousTotal.toLocaleString()}, recomputed gross bill PHP ${billingResult.total.toLocaleString()}, Gate-Out payment already collected PHP ${creditResult.paid.toLocaleString()}, balance due PHP ${creditResult.balanceDue.toLocaleString()}.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -3248,14 +3489,14 @@ const recomputeGateOutBilling = async (req, res) => {
         { label: "Container", value: booking.containerNumber },
         { label: "Recomputed As Of", value: serverTime.toLocaleString() },
         { label: "Updated Gross Bill", value: `PHP ${billingResult.total.toLocaleString()}` },
-        { label: "Approved Payment Credit", value: `PHP ${creditResult.approvedAmount.toLocaleString()}` },
+        { label: "Gate-Out Payment Already Collected", value: `PHP ${creditResult.paid.toLocaleString()}` },
         { label: "Additional Balance Due", value: `PHP ${creditResult.balanceDue.toLocaleString()}` },
     ], { notificationType: "overstay_billing_recomputed" });
     return res.json({
         success: true,
         message: creditResult.balanceDue > 0
             ? `Overstay billing recomputed. An additional PHP ${creditResult.balanceDue.toLocaleString()} must be paid and approved before release.`
-            : "Overstay billing recomputed. Approved payment credit still covers the updated total.",
+            : "Overstay billing recomputed. Previously collected Gate-Out payment still covers the updated total.",
         booking: payload,
         preview: await buildGateOutBillingPreview(booking, serverTime),
     });
@@ -3269,55 +3510,20 @@ const completeBookingGateOut = async (req, res) => {
         return res.status(400).json({ success: false, message: "Only approved gate-out bookings can be completed." });
     }
     if (booking.status === "gate_out_approved") {
-        const actualReleaseTime = new Date();
-        const finalBillingAsOf = booking.overstayFeeWaived && booking.outDate
-            ? parseBookingDate(booking.outDate) || actualReleaseTime
-            : actualReleaseTime;
-        const previousTotal = roundMoney(booking.billingTotal);
-        const releaseBilling = await (0, exports.computeBookingBilling)(booking, {
-            asOf: finalBillingAsOf,
-            persist: true,
-            useAsOfAsBillingEnd: !booking.overstayFeeWaived,
-            phase: "gate_out",
-        });
-        const releaseCredit = applyApprovedPaymentCredit(booking, releaseBilling.total);
-        const finalBillingBasisLabel = booking.overstayFeeWaived
-            ? "the scheduled Gate-Out time because the overstay fee is waived"
-            : "the actual server release time";
-        booking.billingPreviousTotal = previousTotal;
-        booking.billingRecomputedAt = finalBillingAsOf;
-        booking.billingRecomputedBy = req.user._id;
-        booking.billingRecomputeReason = booking.overstayFeeWaived ? "Final billing at scheduled Gate-Out (overstay fee waived)" : "Final billing at physical release";
-        booking.billingRecomputeCount = Number(booking.billingRecomputeCount || 0) + 1;
-        const releaseSchedule = getGateOutScheduleInfo(booking, actualReleaseTime);
+        // Gate-Out payment is finalized before Gate-Out approval. Release Container
+        // must use that approved payment snapshot and must never create a second
+        // payment requirement simply because the physical release happens later.
+        const previousBillingStatus = booking.billingStatus;
+        const previousBalanceDue = Number(booking.paymentBalanceDue || 0);
+        const paymentLock = restoreApprovedGateOutBillingSnapshot(booking);
+        const releaseSchedule = getGateOutScheduleInfo(booking, new Date());
         booking.gateOutScheduleStatus = releaseSchedule.status;
         booking.gateOutOverstayStartedAt = releaseSchedule.overstayStartedAt;
-        booking.billingStatus = releaseCredit.balanceDue <= 0 ? "paid_approved" : "additional_payment_required";
-        if (releaseCredit.balanceDue > 0) {
+        if (previousBillingStatus !== "paid_approved" || previousBalanceDue > 0) {
             addHistory(booking, {
-                billingStatus: "additional_payment_required",
-                remarks: `Release paused after final billing was recomputed using ${booking.overstayFeeWaived ? `the scheduled Gate-Out time ${finalBillingAsOf.toLocaleString()} because the overstay fee is waived` : `the actual server release time ${finalBillingAsOf.toLocaleString()}`}. Previous gross bill PHP ${previousTotal.toLocaleString()}, updated gross bill PHP ${releaseBilling.total.toLocaleString()}, approved payment credit PHP ${releaseCredit.approvedAmount.toLocaleString()}, balance due PHP ${releaseCredit.balanceDue.toLocaleString()}.`,
+                billingStatus: "paid_approved",
+                remarks: `Release payment lock restored from the approved Gate-Out transaction. No additional release payment was requested. Approved Gate-Out payment PHP ${paymentLock.paid.toLocaleString()}, locked gross bill PHP ${paymentLock.lockedGrossTotal.toLocaleString()}.`,
                 changedBy: req.user._id,
-            });
-            await booking.save();
-            await booking.populate("client", "name email companyName phoneNumber");
-            await booking.populate("assignedArea", "name code isCongestionArea");
-            await booking.populate("assignedBlock", "name code");
-            await booking.populate("billingRecomputedBy", "name");
-            const blockedReleasePayload = safeBooking(booking);
-            (0, socket_js_1.emitToAdmins)("booking:overstay_billing_recomputed", blockedReleasePayload);
-            (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:overstay_billing_recomputed", blockedReleasePayload);
-            await notifyClient(booking, "Additional payment required before release", `Final billing was recalculated using ${finalBillingBasisLabel}. An additional balance must be paid and approved before the container can physically exit the yard.`, [
-                { label: "Container", value: booking.containerNumber },
-                { label: "Final Billing As Of", value: finalBillingAsOf.toLocaleString() },
-                { label: "Updated Gross Bill", value: `PHP ${releaseBilling.total.toLocaleString()}` },
-                { label: "Approved Payment Credit", value: `PHP ${releaseCredit.approvedAmount.toLocaleString()}` },
-                { label: "Additional Balance Due", value: `PHP ${releaseCredit.balanceDue.toLocaleString()}` },
-            ], { notificationType: "additional_payment_required" });
-            return res.status(403).json({
-                success: false,
-                message: `Final billing changed using ${finalBillingBasisLabel}. Release cannot be completed until the additional PHP ${releaseCredit.balanceDue.toLocaleString()} is paid and approved.`,
-                booking: blockedReleasePayload,
             });
         }
     }
@@ -3338,6 +3544,9 @@ const completeBookingGateOut = async (req, res) => {
         vatAmount: Number(booking.vatAmount) || 0,
         total: Number(booking.billingTotal || booking.paymentAmount) || 0,
     };
+    const completedGateInPaymentTotal = getGateInPaymentTotal(booking);
+    const completedGateOutPaymentTotal = getGateOutPaymentTotal(booking);
+    const completedTotalPaidAmount = roundMoney(completedGateInPaymentTotal + completedGateOutPaymentTotal);
     const gateOutConditions = normalizeConditionSelections(req.body.gateOutConditions || booking.gateOutConditions || booking.gateInConditions);
     const gateOutConditionOther = String(req.body.gateOutConditionOther || booking.gateOutConditionOther || "").trim();
     booking.status = "completed_gate_out_done";
@@ -3348,7 +3557,7 @@ const completeBookingGateOut = async (req, res) => {
     booking.gateOutConditions = gateOutConditions.length ? gateOutConditions : normalizeConditionSelections(booking.gateInConditions || ["GOOD"]);
     booking.gateOutConditionOther = gateOutConditionOther;
     if (!wasAlreadyCompleted) {
-        addHistory(booking, { remarks: `Container released, final report generated, and PHP ${billingResult.total.toLocaleString()} revenue recorded.`, changedBy: req.user._id });
+        addHistory(booking, { remarks: `Container released, final report generated, and PHP ${completedTotalPaidAmount.toLocaleString()} revenue recorded from approved Gate-In and Gate-Out payments.`, changedBy: req.user._id });
     }
     await booking.save();
     const reportNumber = `REL-${booking.bookingReference}`;
@@ -3373,7 +3582,13 @@ const completeBookingGateOut = async (req, res) => {
             billingSubtotal: booking.billingSubtotal || billingResult.subtotal || 0,
             vatRate: Number.isFinite(Number(booking.vatRate)) ? Number(booking.vatRate) : billingResult.vatRate,
             vatAmount: booking.vatAmount || billingResult.vatAmount || 0,
-            revenueTotal: booking.billingTotal || billingResult.total || 0,
+            gateInBillingTotal: getGateInBillingTotal(booking),
+            gateInPaymentTotal: completedGateInPaymentTotal,
+            gateOutBillingTotal: Number(booking.billingTotal || billingResult.total) || 0,
+            gateOutPaymentTotal: completedGateOutPaymentTotal,
+            totalBillingAmount: roundMoney(getGateInBillingTotal(booking) + (Number(booking.billingTotal || billingResult.total) || 0)),
+            totalPaidAmount: completedTotalPaidAmount,
+            revenueTotal: completedTotalPaidAmount,
             paymentReferenceNumber: booking.paymentReferenceNumber || "",
             paymentDate: booking.paymentDate || booking.paymentReviewedAt || booking.paymentSubmittedAt || null,
             paymentStatus: booking.billingStatus,
@@ -3503,68 +3718,22 @@ const getPublicBookingByNumber = async (req, res) => {
 };
 exports.getPublicBookingByNumber = getPublicBookingByNumber;
 const getBookingSummary = async (req, res) => {
-    const [result] = await Booking_js_1.default.aggregate([
-        {
-            $group: {
-                _id: null,
-                total: { $sum: 1 },
-                pending: { $sum: { $cond: [{ $eq: ["$status", "pending_admin_approval"] }, 1, 0] } },
-                approved: { $sum: { $cond: [{ $eq: ["$status", "approved_area_assigned"] }, 1, 0] } },
-                gateIn: { $sum: { $cond: [{ $eq: ["$status", "gate_in_approved"] }, 1, 0] } },
-                stored: { $sum: { $cond: [{ $eq: ["$status", "stored_in_assigned_area"] }, 1, 0] } },
-                gateOutRequested: { $sum: { $cond: [{ $eq: ["$status", "gate_out_requested"] }, 1, 0] } },
-                gateOutApproved: { $sum: { $cond: [{ $eq: ["$status", "gate_out_approved"] }, 1, 0] } },
-                gateOutReversalRequested: { $sum: { $cond: [{ $eq: ["$status", "gate_out_reversal_requested"] }, 1, 0] } },
-                overstaying: {
-                    $sum: {
-                        $cond: [
-                            {
-                                $and: [
-                                    { $in: ["$status", ["gate_out_approved", "gate_out_reversal_requested"]] },
-                                    { $eq: [{ $ifNull: ["$releasedAt", null] }, null] },
-                                    { $ne: [{ $ifNull: ["$outDate", null] }, null] },
-                                    {
-                                        $lt: [
-                                            {
-                                                $add: [
-                                                    "$outDate",
-                                                    { $multiply: [{ $ifNull: ["$gateOutGracePeriodMinutes", 120] }, 60000] },
-                                                ],
-                                            },
-                                            "$$NOW",
-                                        ],
-                                    },
-                                ],
-                            },
-                            1,
-                            0,
-                        ],
-                    },
-                },
-                completed: { $sum: { $cond: [{ $eq: ["$status", "completed_gate_out_done"] }, 1, 0] } },
-                rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
-                cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
-                active: {
-                    $sum: {
-                        $cond: [
-                            { $in: ["$status", ["rejected", "cancelled", "completed_gate_out_done"]] },
-                            0,
-                            1,
-                        ],
-                    },
-                },
-                unpaid: { $sum: { $cond: [{ $eq: ["$billingStatus", "unpaid"] }, 1, 0] } },
-                paymentReview: { $sum: { $cond: [{ $eq: ["$billingStatus", "payment_under_review"] }, 1, 0] } },
-                paid: { $sum: { $cond: [{ $eq: ["$billingStatus", "paid_approved"] }, 1, 0] } },
-            },
-        },
+    const [total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid] = await Promise.all([
+        Booking_js_1.default.countDocuments(),
+        Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
+        Booking_js_1.default.countDocuments({ status: "approved_area_assigned" }),
+        Booking_js_1.default.countDocuments({ status: "gate_in_approved" }),
+        Booking_js_1.default.countDocuments({ status: "stored_in_assigned_area" }),
+        Booking_js_1.default.countDocuments({ status: "gate_out_requested" }),
+        Booking_js_1.default.countDocuments({ status: "gate_out_reversal_requested" }),
+        Booking_js_1.default.countDocuments({ status: "completed_gate_out_done" }),
+        Booking_js_1.default.countDocuments({ billingStatus: "unpaid" }),
+        Booking_js_1.default.countDocuments({ billingStatus: "payment_under_review" }),
+        Booking_js_1.default.countDocuments({ billingStatus: "paid_approved" }),
     ]);
-    const summary = result || {
-        total: 0, pending: 0, approved: 0, gateIn: 0, stored: 0, gateOutRequested: 0,
-        gateOutApproved: 0, gateOutReversalRequested: 0, overstaying: 0, completed: 0, rejected: 0, cancelled: 0, active: 0,
-        unpaid: 0, paymentReview: 0, paid: 0,
-    };
-    delete summary._id;
-    return res.json({ success: true, summary });
+    return res.json({
+        success: true,
+        summary: { total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid },
+    });
 };
 exports.getBookingSummary = getBookingSummary;

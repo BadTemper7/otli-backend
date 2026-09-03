@@ -42,4 +42,7 @@ const inventoryContainerSchema = new mongoose_1.default.Schema({
     assignedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
 }, { timestamps: true });
 inventoryContainerSchema.index({ area: 1, block: 1, bay: 1, row: 1, tier: 1 });
+inventoryContainerSchema.index({ status: 1, createdAt: -1 });
+inventoryContainerSchema.index({ area: 1, status: 1, createdAt: -1 });
+inventoryContainerSchema.index({ containerNumber: 1, status: 1 });
 exports.default = mongoose_1.default.model("InventoryContainer", inventoryContainerSchema);

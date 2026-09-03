@@ -33,6 +33,21 @@ const addContainer = (bucket, size) => {
 const getTeu = (size) => Number(size) === 40 ? 2 : 1;
 const getFeu = (size) => Number(size) === 20 ? 0.5 : 1;
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
+const getReleaseRevenue = (report = {}) => {
+    const storedPaidTotal = Number(report.totalPaidAmount) || 0;
+    if (storedPaidTotal > 0)
+        return roundMoney(storedPaidTotal);
+    const storedStagePayments = (Number(report.gateInPaymentTotal) || 0) + (Number(report.gateOutPaymentTotal) || 0);
+    if (storedStagePayments > 0)
+        return roundMoney(storedStagePayments);
+    const transactions = Array.isArray(report.booking?.paymentTransactions) ? report.booking.paymentTransactions : [];
+    const archivedPayments = transactions.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    if (archivedPayments > 0)
+        return roundMoney(archivedPayments);
+    // Historical release reports created before payment totals were stored fall back
+    // to the previous revenue value so existing dashboards do not lose old data.
+    return roundMoney(report.revenueTotal);
+};
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
 const normalizeKey = (value) => String(value || "all").trim().toLowerCase();
 const buildDateQuery = (startDate, endDate) => {
@@ -164,7 +179,7 @@ const getDashboardTrend = ({ range, bookings, releaseReports, totalYardCapacity 
             const releasedAt = report.releasedAt ? new Date(report.releasedAt) : null;
             if (releasedAt && releasedAt >= bucket.start && releasedAt <= bucket.end) {
                 containersReleased += 1;
-                revenue += Number(report.revenueTotal) || 0;
+                revenue += getReleaseRevenue(report);
             }
         }
         const occupancyRate = totalYardCapacity > 0
@@ -186,6 +201,15 @@ const getDashboardTrend = ({ range, bookings, releaseReports, totalYardCapacity 
 };
 const safeReleaseReport = (report) => {
     const client = report.client || {};
+    const booking = report.booking || {};
+    const transactions = Array.isArray(booking.paymentTransactions) ? booking.paymentTransactions : [];
+    const gateInPaymentTotal = roundMoney(Number(report.gateInPaymentTotal) || transactions.filter((item) => item.paymentStage === "gate_in").reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+    const gateOutPaymentTotal = roundMoney(Number(report.gateOutPaymentTotal) || transactions.filter((item) => item.paymentStage === "gate_out").reduce((sum, item) => sum + (Number(item.amount) || 0), 0));
+    const gateInBillingTransactions = transactions.filter((item) => item.paymentStage === "gate_in");
+    const gateInBillingTotal = roundMoney(Number(report.gateInBillingTotal) || Math.max(...gateInBillingTransactions.map((item) => Number(item.grossTotal) || Number(item.amount) || 0), 0));
+    const gateOutBillingTotal = roundMoney(Number(report.gateOutBillingTotal) || Number(booking.billingTotal) || Number(report.revenueTotal || 0) - gateInBillingTotal);
+    const totalBillingAmount = roundMoney(Number(report.totalBillingAmount) || gateInBillingTotal + gateOutBillingTotal);
+    const totalPaidAmount = roundMoney(Number(report.totalPaidAmount) || gateInPaymentTotal + gateOutPaymentTotal || getReleaseRevenue(report));
     return {
         id: String(report._id),
         reportNumber: report.reportNumber,
@@ -205,7 +229,13 @@ const safeReleaseReport = (report) => {
         billingDays: Number(report.billingDays) || 0,
         billingSubtotal: roundMoney(report.billingSubtotal),
         vatAmount: roundMoney(report.vatAmount),
-        revenueTotal: roundMoney(report.revenueTotal),
+        gateInBillingTotal,
+        gateInPaymentTotal,
+        gateOutBillingTotal,
+        gateOutPaymentTotal,
+        totalBillingAmount,
+        totalPaidAmount,
+        revenueTotal: totalPaidAmount,
         paymentReferenceNumber: report.paymentReferenceNumber || "",
         generatedAt: report.generatedAt,
     };
@@ -264,6 +294,7 @@ const getYardContainerReport = async (req, res) => {
             .lean(),
         ReleaseReport_js_1.default.find(releaseQuery)
             .populate("client", "name companyName email")
+            .populate("booking", "paymentTransactions billingTotal billingLineItems")
             .sort({ releasedAt: -1, generatedAt: -1 })
             .limit(1000)
             .lean(),
@@ -296,7 +327,7 @@ const getYardContainerReport = async (req, res) => {
         current.bookingCount += 1;
         current.subtotal += Number(report.billingSubtotal) || 0;
         current.vat += Number(report.vatAmount) || 0;
-        current.revenue += Number(report.revenueTotal) || 0;
+        current.revenue += getReleaseRevenue(report);
         revenueByClient.set(clientId, current);
     }
     const clientOptions = clientUsers.map((client) => ({
@@ -309,7 +340,7 @@ const getYardContainerReport = async (req, res) => {
         vat: roundMoney(item.vat),
         revenue: roundMoney(item.revenue),
     })).sort((a, b) => b.revenue - a.revenue);
-    const totalRecordedRevenue = roundMoney(releaseReports.reduce((sum, item) => sum + (Number(item.revenueTotal) || 0), 0));
+    const totalRecordedRevenue = roundMoney(releaseReports.reduce((sum, item) => sum + getReleaseRevenue(item), 0));
     return res.json({
         success: true,
         generatedAt: new Date(),
@@ -355,8 +386,9 @@ const getOperationsDashboard = async (req, res) => {
             ],
         }).select("containerSize gateInApprovedAt storageStartDate storedAt inDate releasedAt").lean(),
         ReleaseReport_js_1.default.find({ releasedAt: { $gte: range.start, $lte: range.end } })
-            .select("releasedAt revenueTotal billingSubtotal vatAmount client")
+            .select("releasedAt revenueTotal totalPaidAmount gateInPaymentTotal gateOutPaymentTotal billingSubtotal vatAmount client booking")
             .populate("client", "name companyName email")
+            .populate("booking", "paymentTransactions")
             .sort({ releasedAt: 1 })
             .lean(),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
@@ -391,7 +423,7 @@ const getOperationsDashboard = async (req, res) => {
             revenue: 0,
         };
         current.transactionCount += 1;
-        current.revenue += Number(report.revenueTotal) || 0;
+        current.revenue += getReleaseRevenue(report);
         customerTotals.set(clientId, current);
     }
     const topCustomer = Array.from(customerTotals.values()).sort((a, b) => b.revenue - a.revenue || b.transactionCount - a.transactionCount)[0] || null;

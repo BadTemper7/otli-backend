@@ -25,6 +25,12 @@ const releaseReportSchema = new mongoose_1.default.Schema({
     billingSubtotal: { type: Number, default: 0, min: 0 },
     vatRate: { type: Number, default: 0, min: 0 },
     vatAmount: { type: Number, default: 0, min: 0 },
+    gateInBillingTotal: { type: Number, default: 0, min: 0 },
+    gateInPaymentTotal: { type: Number, default: 0, min: 0 },
+    gateOutBillingTotal: { type: Number, default: 0, min: 0 },
+    gateOutPaymentTotal: { type: Number, default: 0, min: 0 },
+    totalBillingAmount: { type: Number, default: 0, min: 0 },
+    totalPaidAmount: { type: Number, default: 0, min: 0 },
     revenueTotal: { type: Number, default: 0, min: 0 },
     paymentReferenceNumber: { type: String, default: "", trim: true },
     paymentDate: { type: Date, default: null },
@@ -41,6 +47,12 @@ releaseReportSchema.pre("validate", function () {
     this.billingSubtotal = Math.max(Number(this.billingSubtotal) || 0, 0);
     this.vatRate = Math.max(Number(this.vatRate) || 0, 0);
     this.vatAmount = Math.max(Number(this.vatAmount) || 0, 0);
+    this.gateInBillingTotal = Math.max(Number(this.gateInBillingTotal) || 0, 0);
+    this.gateInPaymentTotal = Math.max(Number(this.gateInPaymentTotal) || 0, 0);
+    this.gateOutBillingTotal = Math.max(Number(this.gateOutBillingTotal) || 0, 0);
+    this.gateOutPaymentTotal = Math.max(Number(this.gateOutPaymentTotal) || 0, 0);
+    this.totalBillingAmount = Math.max(Number(this.totalBillingAmount) || 0, 0);
+    this.totalPaidAmount = Math.max(Number(this.totalPaidAmount) || 0, 0);
     this.revenueTotal = Math.max(Number(this.revenueTotal) || 0, 0);
 });
 exports.default = mongoose_1.default.model("ReleaseReport", releaseReportSchema);

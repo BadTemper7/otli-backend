@@ -333,14 +333,14 @@ const createClientPreAdvice = async (req, res) => {
 };
 exports.createClientPreAdvice = createClientPreAdvice;
 const listClientPreAdvices = async (req, res) => {
-    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find({ client: req.user._id })).sort({ createdAt: -1 });
+    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find({ client: req.user._id })).sort({ createdAt: -1 }).limit(300).lean();
     return res.json({ success: true, preAdvices: preAdvices.map(safePreAdvice) });
 };
 exports.listClientPreAdvices = listClientPreAdvices;
 const listAdminPreAdvices = async (req, res) => {
     const status = req.query.status;
     const query = status && status !== "all" ? { status } : {};
-    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find(query)).sort({ createdAt: -1 }).limit(200);
+    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find(query)).sort({ createdAt: -1 }).limit(200).lean();
     return res.json({ success: true, preAdvices: preAdvices.map(safePreAdvice) });
 };
 exports.listAdminPreAdvices = listAdminPreAdvices;
@@ -451,7 +451,7 @@ const rejectPreAdvice = async (req, res) => {
 };
 exports.rejectPreAdvice = rejectPreAdvice;
 const listGateInReadyPreAdvices = async (req, res) => {
-    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find({ status: "confirmed" })).sort({ confirmedAt: -1, createdAt: -1 });
+    const preAdvices = await populatePreAdvice(PreAdvice_js_1.default.find({ status: "confirmed" })).sort({ confirmedAt: -1, createdAt: -1 }).limit(300).lean();
     return res.json({ success: true, preAdvices: preAdvices.map(safePreAdvice) });
 };
 exports.listGateInReadyPreAdvices = listGateInReadyPreAdvices;

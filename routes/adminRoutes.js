@@ -38,6 +38,7 @@ router.get("/reports/yard-containers", (0, authMiddleware_js_1.requirePermission
 router.get("/bookings/summary", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingSummary));
 router.get("/bookings", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
 router.get("/bookings/calendar", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBookingCalendar));
+router.get("/bookings/clients", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
 router.get("/bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
 router.get("/pre-advice-bookings", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
 router.get("/pre-advice-bookings/yard/areas", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
@@ -53,6 +54,7 @@ router.patch("/bookings/:id/rate-classification", (0, authMiddleware_js_1.requir
 router.delete("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("operations", "delete"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBooking));
 router.patch("/bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
 router.patch("/bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
+router.patch("/bookings/:id/gate-in/details", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateBookingGateInDetails));
 router.patch("/bookings/:id/gate-in", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateIn));
 router.patch("/bookings/:id/gate-in/reject", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateIn));
 router.patch("/bookings/:id/gate-in/cancel", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
@@ -65,6 +67,7 @@ router.patch("/bookings/:id/relocate", (0, authMiddleware_js_1.requirePermission
 router.post("/bookings/:id/payment/cash", (0, authMiddleware_js_1.requireAnyPermission)([["gateIn", "edit"], ["gateOut", "edit"]]), (0, asyncHandler_js_1.default)(bookingController_js_1.recordAdminCashPayment));
 router.patch("/bookings/:id/payment/approve", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingPayment));
 router.patch("/bookings/:id/payment/reject", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingPayment));
+router.patch("/bookings/:id/payments/:transactionId/amount", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateApprovedPaymentAmount));
 router.patch("/bookings/:id/cancel", (0, authMiddleware_js_1.requirePermission)("operations", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
 router.patch("/bookings/:id/gate-out/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateOut));
 router.patch("/bookings/:id/gate-out/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateOut));
@@ -104,7 +107,6 @@ router.patch("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inv
 router.delete("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
 router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
 router.get("/inventory/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryContainers));
-router.get("/inventory/containers/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.getInventoryContainer));
 router.post("/inventory/containers/legacy", authMiddleware_js_1.superAdminOnly, uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
 router.patch("/inventory/containers/:id/assign", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(inventoryController_js_1.assignInventoryContainer));
 router.get("/inventory/summary", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
