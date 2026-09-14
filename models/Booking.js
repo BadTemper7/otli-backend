@@ -278,6 +278,7 @@ bookingSchema.index({ status: 1, billingStatus: 1, createdAt: -1 });
 bookingSchema.index({ client: 1, createdAt: -1 });
 bookingSchema.index({ inDate: 1, status: 1 });
 bookingSchema.index({ status: 1, gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 });
+bookingSchema.index({ status: 1, updatedAt: -1 });
 bookingSchema.index({ status: 1, outDate: 1, updatedAt: -1 });
 bookingSchema.index({ client: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ status: 1, containerLoadStatus: 1, rateType: 1, gateInApprovedAt: -1 });

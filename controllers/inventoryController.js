@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.assignInventoryContainer = exports.createLegacyInventoryContainer = exports.listInventoryClients = exports.listInventoryContainers = void 0;
+exports.assignInventoryContainer = exports.createLegacyInventoryContainer = exports.listInventoryClients = exports.getInventoryStats = exports.listInventoryContainers = void 0;
 const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
 const PreAdvice_js_1 = __importDefault(require("../models/PreAdvice.js"));
@@ -581,6 +581,8 @@ const createLegacyInventoryContainer = async (req, res) => {
 };
 exports.createLegacyInventoryContainer = createLegacyInventoryContainer;
 const INVENTORY_LIST_LIMIT = 500;
+const INVENTORY_STATS_CACHE_TTL_MS = Math.max(Number(process.env.INVENTORY_STATS_CACHE_TTL_MS) || 10000, 3000);
+const INVENTORY_STATS_MAX_TIME_MS = Math.max(Number(process.env.INVENTORY_STATS_MAX_TIME_MS) || 5000, 1000);
 const INVENTORY_BOOKING_STATUSES = ["gate_in_approved", "stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"];
 const INVENTORY_STORAGE_BOOKING_STATUSES = ["stored_in_assigned_area", "gate_out_requested", "gate_out_approved", "gate_out_reversal_requested"];
 const INVENTORY_LEGACY_STATUSES = ["awaiting_yard_assignment", "in_yard", "for_billing", "pending_payment", "payment_verified", "cleared_for_gate_out", "released", "hold"];
@@ -600,12 +602,70 @@ const getInventoryQueryLimit = (value) => {
     const requested = Math.floor(Number(value) || INVENTORY_LIST_LIMIT);
     return Math.min(Math.max(requested, 25), INVENTORY_LIST_LIMIT) + 1;
 };
+let inventoryStatsCache = { value: null, expiresAt: 0, promise: null };
+const loadInventoryStats = async ({ force = false } = {}) => {
+    const now = Date.now();
+    if (!force && inventoryStatsCache.value && inventoryStatsCache.expiresAt > now) {
+        return inventoryStatsCache.value;
+    }
+    if (!force && inventoryStatsCache.promise) {
+        return inventoryStatsCache.promise;
+    }
+    const previousValue = inventoryStatsCache.value;
+    const promise = Booking_js_1.default.aggregate([
+        { $match: { status: { $in: INVENTORY_BOOKING_STATUSES } } },
+        {
+            $group: {
+                _id: null,
+                totalContainers: { $sum: 1 },
+                waitingStorage: { $sum: { $cond: [{ $eq: ["$status", "gate_in_approved"] }, 1, 0] } },
+                inventoryTeu: { $sum: { $cond: [{ $eq: ["$containerSize", 40] }, 2, 1] } },
+                inventoryFeu: { $sum: { $cond: [{ $eq: ["$containerSize", 40] }, 1, 0.5] } },
+            },
+        },
+    ]).option({ maxTimeMS: INVENTORY_STATS_MAX_TIME_MS })
+        .then((rows) => {
+            const row = rows[0] || {};
+            const value = {
+                totalContainers: Number(row.totalContainers) || 0,
+                waitingStorage: Number(row.waitingStorage) || 0,
+                inventoryTeu: Number(row.inventoryTeu) || 0,
+                inventoryFeu: Number(row.inventoryFeu) || 0,
+            };
+            inventoryStatsCache = {
+                value,
+                expiresAt: Date.now() + INVENTORY_STATS_CACHE_TTL_MS,
+                promise: null,
+            };
+            return value;
+        })
+        .catch((error) => {
+            inventoryStatsCache.promise = null;
+            if (previousValue) return previousValue;
+            throw error;
+        });
+    inventoryStatsCache = { ...inventoryStatsCache, promise };
+    return promise;
+};
+const getInventoryStats = async (req, res) => {
+    try {
+        const stats = await loadInventoryStats({ force: String(req.query.refresh || "").toLowerCase() === "true" });
+        return res.json({ success: true, stats });
+    }
+    catch (error) {
+        console.error("Inventory stats query failed:", error.message);
+        return res.status(503).json({
+            success: false,
+            message: "Inventory totals are still being calculated. The container list remains available.",
+        });
+    }
+};
+exports.getInventoryStats = getInventoryStats;
 const listInventoryContainers = async (req, res) => {
     const { areaId, blockId, status, clientId, search, loadStatus, rateType, recordSource, source = "all", view = "inventory" } = req.query;
     const isStorageView = String(view).toLowerCase() === "storage";
     const query = { status: { $in: isStorageView ? INVENTORY_STORAGE_LEGACY_STATUSES : INVENTORY_LEGACY_STATUSES } };
     const bookingQuery = { status: { $in: isStorageView ? INVENTORY_STORAGE_BOOKING_STATUSES : INVENTORY_BOOKING_STATUSES } };
-    const inventoryStatsQuery = { status: { $in: INVENTORY_BOOKING_STATUSES } };
     const normalizedSource = ["all", "booking", "legacy"].includes(String(source)) ? String(source) : "all";
     const normalizedLoadStatus = String(loadStatus || "").toLowerCase() === "loaded" ? "laden" : String(loadStatus || "").toLowerCase();
     const requestedLimit = getInventoryQueryLimit(req.query.limit);
@@ -613,13 +673,10 @@ const listInventoryContainers = async (req, res) => {
     if (clientId && clientId !== "all") {
         query.client = clientId;
         bookingQuery.client = clientId;
-        inventoryStatsQuery.client = Booking_js_1.default.schema.path("client").cast(clientId);
     }
     if (status && status !== "all") {
-        if (INVENTORY_LEGACY_STATUSES.includes(status))
-            query.status = status;
-        if (INVENTORY_BOOKING_STATUSES.includes(status))
-            bookingQuery.status = status;
+        if (INVENTORY_LEGACY_STATUSES.includes(status)) query.status = status;
+        if (INVENTORY_BOOKING_STATUSES.includes(status)) bookingQuery.status = status;
     }
     if (areaId) {
         query.area = areaId;
@@ -685,6 +742,10 @@ const listInventoryContainers = async (req, res) => {
             .sort({ status: 1, createdAt: -1 })
             .limit(requestedLimit)
             .lean();
+
+    const bookingSort = bookingQuery.status === "gate_in_approved"
+        ? { gateInApprovedAt: -1 }
+        : { updatedAt: -1 };
     const bookingPromise = normalizedSource === "legacy"
         ? Promise.resolve([])
         : Booking_js_1.default.find(bookingQuery)
@@ -693,49 +754,37 @@ const listInventoryContainers = async (req, res) => {
             .populate("assignedArea", "name code")
             .populate("assignedBlock", "name code")
             .populate("legacyRegisteredBy", "name")
-            .sort({ gateInApprovedAt: -1, storedAt: -1, updatedAt: -1 })
+            .sort(bookingSort)
             .limit(requestedLimit)
             .lean();
-    const includeStats = String(req.query.includeStats || "true").toLowerCase() !== "false";
-    const statsPromise = normalizedSource === "legacy" || !includeStats
-        ? Promise.resolve([])
-        : Booking_js_1.default.aggregate([
-            { $match: inventoryStatsQuery },
-            {
-                $group: {
-                    _id: null,
-                    totalContainers: { $sum: 1 },
-                    waitingStorage: { $sum: { $cond: [{ $eq: ["$status", "gate_in_approved"] }, 1, 0] } },
-                    inventoryTeu: { $sum: { $cond: [{ $eq: ["$containerSize", 40] }, 2, 1] } },
-                    inventoryFeu: { $sum: { $cond: [{ $eq: ["$containerSize", 40] }, 1, 0.5] } },
-                },
-            },
-        ]);
 
-    const [containers, bookingContainers, statsRows] = await Promise.all([legacyPromise, bookingPromise, statsPromise]);
+    // Stats are intentionally not part of the normal list request. Keeping them
+    // separate prevents a collection-wide aggregate from delaying the table.
+    const includeStats = String(req.query.includeStats || "false").toLowerCase() === "true";
+    const [containers, bookingContainers] = await Promise.all([legacyPromise, bookingPromise]);
+    let statsPayload;
+    if (normalizedSource !== "legacy" && includeStats) {
+        try {
+            statsPayload = await loadInventoryStats();
+        }
+        catch (error) {
+            console.warn("Inventory list returned without stats:", error.message);
+        }
+    }
+
     const combined = [
         ...bookingContainers.map(safeBookingContainer),
         ...containers.map((container) => ({ ...safeContainer(container), source: "pre_advice" })),
     ].sort((a, b) => {
         const aWaitingStorage = a.source === "booking" && a.bookingStatus === "gate_in_approved" ? 0 : 1;
         const bWaitingStorage = b.source === "booking" && b.bookingStatus === "gate_in_approved" ? 0 : 1;
-        if (aWaitingStorage !== bWaitingStorage)
-            return aWaitingStorage - bWaitingStorage;
+        if (aWaitingStorage !== bWaitingStorage) return aWaitingStorage - bWaitingStorage;
         const bEnteredAt = new Date(b.inventoryEnteredAt || b.gateInApprovedAt || b.storedAt || b.createdAt || 0).getTime();
         const aEnteredAt = new Date(a.inventoryEnteredAt || a.gateInApprovedAt || a.storedAt || a.createdAt || 0).getTime();
         return bEnteredAt - aEnteredAt;
     });
     const visibleLimit = requestedLimit - 1;
     const limited = combined.slice(0, visibleLimit);
-    const stats = statsRows[0] || { totalContainers: 0, waitingStorage: 0, inventoryTeu: 0, inventoryFeu: 0 };
-    const statsPayload = includeStats
-        ? {
-            totalContainers: Number(stats.totalContainers) || 0,
-            waitingStorage: Number(stats.waitingStorage) || 0,
-            inventoryTeu: Number(stats.inventoryTeu) || 0,
-            inventoryFeu: Number(stats.inventoryFeu) || 0,
-        }
-        : undefined;
     return res.json({
         success: true,
         containers: limited,
