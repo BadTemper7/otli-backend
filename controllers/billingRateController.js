@@ -11,6 +11,26 @@ const toNumber = (value, fallback = 0) => {
     return Number.isFinite(parsed) ? parsed : fallback;
 };
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
+const normalizeLoadStatus = (value) => {
+    const normalized = String(value || "all").trim().toLowerCase();
+    if (normalized === "loaded")
+        return "laden";
+    return ["all", "empty", "laden"].includes(normalized) ? normalized : "all";
+};
+const getChargeType = (rate = {}) => {
+    const text = `${rate.chargeCode || ""} ${rate.description || ""}`.trim().toLowerCase();
+    if (/lift[_\s-]*(on|in)/.test(text))
+        return "lift_on";
+    if (/lift[_\s-]*(off|out)/.test(text))
+        return "lift_off";
+    if (/storage/.test(text))
+        return "storage";
+    if (/total[_\s-]*handling/.test(text))
+        return "total_handling";
+    if (/congestion/.test(text))
+        return "congestion";
+    return "other";
+};
 const isDocumentationRate = (rate = {}) => /documentation|document_fee|doc_fee/.test(`${rate.description || ""} ${rate.chargeCode || ""}`.toLowerCase());
 exports.OTLI_REFERENCE_RATES = [
     {
@@ -93,12 +113,15 @@ const getDefaultUnitLabel = (unit = "per_container", containerSize = "all") => {
         return "fixed charge";
     return containerSize === "all" ? "per container" : `per ${containerSize} ft container`;
 };
-const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", currentRate = null } = {}) => {
+const inferRateRules = ({ description = "", unitLabel = "", requestedUnit = "", requestedContainerSize = "", currentRate = null } = {}) => {
     const descriptionText = String(description).trim().toLowerCase();
     const unitText = String(unitLabel).trim().toLowerCase();
     const combined = `${descriptionText} ${unitText}`;
     const sizeMatch = combined.match(/(?:^|\D)(20|40)(?:\D|$)/);
-    let containerSize = sizeMatch?.[1] || currentRate?.containerSize || "all";
+    const normalizedRequestedSize = ["20", "40", "all"].includes(String(requestedContainerSize || "").trim())
+        ? String(requestedContainerSize || "").trim()
+        : "";
+    let containerSize = normalizedRequestedSize || sizeMatch?.[1] || currentRate?.containerSize || "all";
     const isLiftIn = /\blift\s*(in|on)\b/.test(descriptionText);
     const isLiftOut = /\blift\s*(out|off)\b/.test(descriptionText);
     const isLift = isLiftIn || isLiftOut;
@@ -183,7 +206,7 @@ const buildRatePayload = (body = {}, currentRate = null) => {
     const unitLabel = String(body.unitLabel
         ?? currentRate?.unitLabel
         ?? getDefaultUnitLabel(requestedUnit || currentRate?.unit, currentRate?.containerSize)).trim();
-    const rules = inferRateRules({ description, unitLabel, requestedUnit, currentRate });
+    const rules = inferRateRules({ description, unitLabel, requestedUnit, requestedContainerSize: body.containerSize, currentRate });
     const { suggestedChargeCode, requiresContainerSize, ...normalizedRules } = rules;
     return normalizeRatePayload({
         description,
@@ -191,12 +214,17 @@ const buildRatePayload = (body = {}, currentRate = null) => {
         rateType: normalizeRateType(body.rateType ?? currentRate?.rateType),
         unitLabel,
         ...normalizedRules,
+        containerType: body.containerType ?? currentRate?.containerType ?? normalizedRules.containerType ?? "all",
+        loadStatus: normalizeLoadStatus(body.loadStatus ?? currentRate?.loadStatus ?? "all"),
         rateAmount: body.rateAmount ?? currentRate?.rateAmount ?? 0,
-        freeDays: 0,
-        minimumAmount: 0,
-        effectiveDate: currentRate?.effectiveDate || new Date(),
+        freeDays: body.freeDays ?? currentRate?.freeDays ?? 0,
+        minimumAmount: body.minimumAmount ?? currentRate?.minimumAmount ?? 0,
+        effectiveDate: body.effectiveDate || new Date(),
+        effectiveTo: null,
         status: "active",
-        notes: "",
+        notes: body.notes ?? currentRate?.notes ?? "",
+        version: currentRate ? Math.max(Number(currentRate.version) || 1, 1) + 1 : 1,
+        supersedesRate: currentRate?._id || null,
     });
 };
 const safeRate = (rate) => {
@@ -212,11 +240,15 @@ const safeRate = (rate) => {
         unitLabel: doc.unitLabel || getDefaultUnitLabel(doc.unit, doc.containerSize),
         containerSize: doc.containerSize,
         containerType: doc.containerType,
-        loadStatus: doc.loadStatus,
+        loadStatus: normalizeLoadStatus(doc.loadStatus),
+        chargeType: getChargeType(doc),
         rateAmount: Number(doc.rateAmount) || 0,
         freeDays: Number(doc.freeDays) || 0,
         minimumAmount: Number(doc.minimumAmount) || 0,
         effectiveDate: doc.effectiveDate,
+        effectiveTo: doc.effectiveTo || null,
+        version: Math.max(Number(doc.version) || 1, 1),
+        supersedesRate: doc.supersedesRate ? String(doc.supersedesRate) : null,
         status: doc.status,
         notes: doc.notes || "",
         sortOrder: Number(doc.sortOrder) || 100,
@@ -234,24 +266,84 @@ const normalizeRatePayload = (body = {}) => ({
     unitLabel: String(body.unitLabel || getDefaultUnitLabel(body.unit || (body.billingScope === "storage" ? "storage_day" : "per_container"), String(body.containerSize || "all"))).trim(),
     containerSize: String(body.containerSize || "all"),
     containerType: body.containerType || "all",
-    loadStatus: body.loadStatus || "all",
+    loadStatus: normalizeLoadStatus(body.loadStatus),
     rateAmount: toNumber(body.rateAmount, 0),
     freeDays: toNumber(body.freeDays, 0),
     minimumAmount: toNumber(body.minimumAmount, 0),
     effectiveDate: body.effectiveDate || new Date(),
+    effectiveTo: body.effectiveTo || null,
+    version: Math.max(toNumber(body.version, 1), 1),
+    supersedesRate: body.supersedesRate || null,
     status: body.status || "active",
     notes: body.notes || "",
     sortOrder: toNumber(body.sortOrder, 100),
 });
+const getRateConfigKey = (rate = {}) => [
+    normalizeRateType(rate.rateType),
+    String(rate.chargeCode || rate.description || rate._id || ""),
+    String(rate.containerSize || "all"),
+    String(rate.containerType || "all"),
+    normalizeLoadStatus(rate.loadStatus),
+].join(":");
+const addEffectiveWindowFilter = (query, asOf = new Date()) => {
+    query.effectiveDate = { $lte: asOf };
+    query.$and = [
+        ...(query.$and || []),
+        { $or: [{ effectiveTo: null }, { effectiveTo: { $gt: asOf } }, { effectiveTo: { $exists: false } }] },
+    ];
+    return query;
+};
+const validateConfiguredRate = (payload) => {
+    const description = String(payload.description || "").toLowerCase();
+    const needsSize = /lift|storage|congestion|total\s+handling/.test(description);
+    if (needsSize && !["20", "40"].includes(String(payload.containerSize))) {
+        return "Select a 20ft or 40ft unit for this billing rate.";
+    }
+    if (!["all", "empty", "laden"].includes(normalizeLoadStatus(payload.loadStatus))) {
+        return "Container load status must be All, Empty, or Loaded.";
+    }
+    if (/congestion/.test(description) && payload.billingScope !== "display_only") {
+        return "Congestion Surcharge must remain a manual option and cannot be an automatic base charge.";
+    }
+    return "";
+};
+const findCurrentMatchingRate = async (payload, excludeId = null) => {
+    const now = new Date();
+    const query = {
+        rateType: payload.rateType,
+        chargeCode: payload.chargeCode,
+        containerSize: payload.containerSize,
+        containerType: payload.containerType,
+        loadStatus: payload.loadStatus,
+        status: "active",
+    };
+    if (excludeId)
+        query._id = { $ne: excludeId };
+    addEffectiveWindowFilter(query, now);
+    return BillingRate_js_1.default.findOne(query).sort({ effectiveDate: -1, createdAt: -1 });
+};
+const closeRateVersion = async (rate, effectiveTo, { markInactive = true } = {}) => {
+    const closeAt = new Date(effectiveTo);
+    rate.effectiveTo = closeAt;
+    if (markInactive)
+        rate.status = "inactive";
+    await rate.save();
+    return rate;
+};
 const listBillingRates = async (req, res) => {
-    const { status, search, category, rateType } = req.query;
+    const { status, search, category, rateType, loadStatus } = req.query;
+    const now = new Date();
     const query = {};
     if (status && status !== "all")
         query.status = status;
+    else
+        query.status = "active";
     if (category && category !== "all")
         query.category = category;
     if (rateType && rateType !== "all")
         query.rateType = normalizeRateType(rateType);
+    if (loadStatus && loadStatus !== "all")
+        query.loadStatus = normalizeLoadStatus(loadStatus);
     if (search) {
         const term = String(search).trim();
         query.$or = [
@@ -262,26 +354,24 @@ const listBillingRates = async (req, res) => {
         ];
     }
     query.billingScope = { $ne: "optional_stripping_stuffing" };
-    const rates = await BillingRate_js_1.default.find(query).sort({ rateType: 1, category: 1, sortOrder: 1, status: 1, effectiveDate: -1, createdAt: -1 }).limit(300);
-    const latestByCode = new Map();
+    addEffectiveWindowFilter(query, now);
+    const rates = await BillingRate_js_1.default.find(query)
+        .sort({ rateType: 1, category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 })
+        .limit(500)
+        .lean();
+    const latestByConfig = new Map();
     for (const rate of rates) {
-        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
-        if (!latestByCode.has(key)) latestByCode.set(key, rate);
+        const key = getRateConfigKey(rate);
+        if (!latestByConfig.has(key))
+            latestByConfig.set(key, rate);
     }
-    return res.json({ success: true, rates: Array.from(latestByCode.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate), referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing" && !isDocumentationRate(rate)) });
+    return res.json({
+        success: true,
+        rates: Array.from(latestByConfig.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate),
+        referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing" && !isDocumentationRate(rate)),
+    });
 };
 exports.listBillingRates = listBillingRates;
-const validateConfiguredRate = (payload) => {
-    const description = String(payload.description || "").toLowerCase();
-    const needsSize = /lift|storage|congestion|total\s+handling/.test(description);
-    if (needsSize && !["20", "40"].includes(String(payload.containerSize))) {
-        return "Select a 20ft or 40ft unit for this billing rate.";
-    }
-    if (/congestion/.test(description) && payload.billingScope !== "display_only") {
-        return "Congestion Surcharge must remain a manual option and cannot be an automatic base charge.";
-    }
-    return "";
-};
 const createBillingRate = async (req, res) => {
     const payload = buildRatePayload(req.body);
     if (!payload.description || !payload.unitLabel) {
@@ -294,7 +384,12 @@ const createBillingRate = async (req, res) => {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
     }
     const validationError = validateConfiguredRate(payload);
-    if (validationError) return res.status(400).json({ success: false, message: validationError });
+    if (validationError)
+        return res.status(400).json({ success: false, message: validationError });
+    const existing = await findCurrentMatchingRate(payload);
+    if (existing) {
+        return res.status(409).json({ success: false, message: "A current rate already exists for the same charge, container size/type, and load status. Edit that rate to create a new version." });
+    }
     const rate = await BillingRate_js_1.default.create(payload);
     const safe = safeRate(rate);
     (0, socket_js_1.emitToAdmins)("billing_rate:created", safe);
@@ -302,10 +397,13 @@ const createBillingRate = async (req, res) => {
 };
 exports.createBillingRate = createBillingRate;
 const updateBillingRate = async (req, res) => {
-    const rate = await BillingRate_js_1.default.findById(req.params.id);
-    if (!rate)
+    const currentRate = await BillingRate_js_1.default.findById(req.params.id);
+    if (!currentRate)
         return res.status(404).json({ success: false, message: "Billing rate not found." });
-    const payload = buildRatePayload(req.body, rate);
+    if (currentRate.effectiveTo && new Date(currentRate.effectiveTo).getTime() <= Date.now()) {
+        return res.status(409).json({ success: false, message: "This is a historical rate version and cannot be edited. Edit the current rate instead." });
+    }
+    const payload = buildRatePayload(req.body, currentRate);
     if (!payload.description || !payload.unitLabel) {
         return res.status(400).json({ success: false, message: "Description and Unit are required." });
     }
@@ -316,47 +414,95 @@ const updateBillingRate = async (req, res) => {
         return res.status(400).json({ success: false, message: "Rate amount must be greater than zero." });
     }
     const validationError = validateConfiguredRate(payload);
-    if (validationError) return res.status(400).json({ success: false, message: validationError });
-    Object.assign(rate, payload);
-    await rate.save();
-    const safe = safeRate(rate);
-    (0, socket_js_1.emitToAdmins)("billing_rate:updated", safe);
-    return res.json({ success: true, message: "Billing rate updated successfully.", rate: safe });
+    if (validationError)
+        return res.status(400).json({ success: false, message: validationError });
+    const currentStart = new Date(currentRate.effectiveDate || currentRate.createdAt || 0).getTime();
+    let nextEffectiveAt = new Date(payload.effectiveDate || Date.now());
+    if (Number.isNaN(nextEffectiveAt.getTime()))
+        nextEffectiveAt = new Date();
+    if (nextEffectiveAt.getTime() <= currentStart)
+        nextEffectiveAt = new Date(Math.max(Date.now(), currentStart + 1));
+    payload.effectiveDate = nextEffectiveAt;
+    payload.effectiveTo = null;
+    payload.status = "active";
+    payload.version = Math.max(Number(currentRate.version) || 1, 1) + 1;
+    payload.supersedesRate = currentRate._id;
+    const conflicting = await findCurrentMatchingRate(payload, currentRate._id);
+    if (conflicting) {
+        return res.status(409).json({ success: false, message: "Another current rate already exists for the same charge and Empty/Loaded classification." });
+    }
+    const newRate = await BillingRate_js_1.default.create(payload);
+    try {
+        await closeRateVersion(currentRate, nextEffectiveAt);
+    }
+    catch (error) {
+        await BillingRate_js_1.default.deleteOne({ _id: newRate._id }).catch(() => undefined);
+        throw error;
+    }
+    const safe = safeRate(newRate);
+    (0, socket_js_1.emitToAdmins)("billing_rate:updated", { ...safe, previousRateId: String(currentRate._id), versioned: true });
+    return res.json({
+        success: true,
+        message: "Billing rate updated as a new version. Previous transactions remain on their original rate snapshot.",
+        rate: safe,
+        previousRateId: String(currentRate._id),
+    });
 };
 exports.updateBillingRate = updateBillingRate;
 const seedReferenceBillingRates = async (req, res) => {
-    const effectiveDate = req.body?.effectiveDate || new Date().toISOString().slice(0, 10);
+    const requestedDate = req.body?.effectiveDate ? new Date(req.body.effectiveDate) : new Date();
+    const effectiveDate = Number.isNaN(requestedDate.getTime()) ? new Date() : requestedDate;
     const mode = req.body?.mode || "upsert";
     const createdOrUpdated = [];
     for (const template of exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing")) {
         const payload = normalizeRatePayload({
             ...template,
             effectiveDate,
+            effectiveTo: null,
             status: "active",
             containerType: "all",
-            loadStatus: "all",
+            loadStatus: normalizeLoadStatus(template.loadStatus || "all"),
             freeDays: 0,
             minimumAmount: 0,
         });
-        let rate = await BillingRate_js_1.default.findOne({ rateType: payload.rateType, chargeCode: payload.chargeCode });
-        if (rate && mode === "skip_existing") {
-            createdOrUpdated.push(rate);
+        const currentQuery = {
+            rateType: payload.rateType,
+            chargeCode: payload.chargeCode,
+            containerSize: payload.containerSize,
+            containerType: payload.containerType,
+            loadStatus: payload.loadStatus,
+            status: "active",
+        };
+        addEffectiveWindowFilter(currentQuery, new Date());
+        const currentRate = await BillingRate_js_1.default.findOne(currentQuery).sort({ effectiveDate: -1, createdAt: -1 });
+        if (currentRate && mode === "skip_existing") {
+            createdOrUpdated.push(currentRate);
             continue;
         }
-        if (rate) {
-            Object.assign(rate, payload);
-            await rate.save();
+        if (currentRate) {
+            const nextEffectiveAt = effectiveDate.getTime() > new Date(currentRate.effectiveDate).getTime()
+                ? effectiveDate
+                : new Date(Math.max(Date.now(), new Date(currentRate.effectiveDate).getTime() + 1));
+            const versionPayload = {
+                ...payload,
+                effectiveDate: nextEffectiveAt,
+                version: Math.max(Number(currentRate.version) || 1, 1) + 1,
+                supersedesRate: currentRate._id,
+            };
+            const nextRate = await BillingRate_js_1.default.create(versionPayload);
+            await closeRateVersion(currentRate, nextEffectiveAt);
+            createdOrUpdated.push(nextRate);
         }
         else {
-            rate = await BillingRate_js_1.default.create(payload);
+            createdOrUpdated.push(await BillingRate_js_1.default.create(payload));
         }
-        createdOrUpdated.push(rate);
     }
-    const rates = await BillingRate_js_1.default.find({ chargeCode: { $in: exports.OTLI_REFERENCE_RATES.map((rate) => rate.chargeCode) } }).sort({ rateType: 1, category: 1, sortOrder: 1 });
+    const ids = createdOrUpdated.map((rate) => rate._id);
+    const rates = await BillingRate_js_1.default.find({ _id: { $in: ids } }).sort({ rateType: 1, category: 1, sortOrder: 1 });
     (0, socket_js_1.emitToAdmins)("billing_rate:reference_applied", { count: rates.length, effectiveDate });
     return res.json({
         success: true,
-        message: "OTLI reference rates have been applied to Rate Setup.",
+        message: "OTLI reference rates have been applied to Rate Setup without overwriting historical rate versions.",
         rates: rates.map(safeRate),
     });
 };
@@ -366,27 +512,43 @@ const deleteBillingRate = async (req, res) => {
     if (!rate)
         return res.status(404).json({ success: false, message: "Billing rate not found." });
     const safe = safeRate(rate);
-    await rate.deleteOne();
+    const now = new Date();
+    if (!rate.effectiveTo || new Date(rate.effectiveTo).getTime() > now.getTime()) {
+        if (new Date(rate.effectiveDate).getTime() >= now.getTime()) {
+            await rate.deleteOne();
+        }
+        else {
+            rate.effectiveTo = now;
+            rate.status = "inactive";
+            await rate.save();
+        }
+    }
     (0, socket_js_1.emitToAdmins)("billing_rate:deleted", safe);
-    return res.json({ success: true, message: "Billing rate deleted successfully." });
+    return res.json({ success: true, message: "Billing rate deactivated. Historical transactions and past rate versions were preserved." });
 };
 exports.deleteBillingRate = deleteBillingRate;
 const listActiveBillingRates = async (req, res) => {
+    const now = new Date();
     const query = {
         status: "active",
-        effectiveDate: { $lte: new Date() },
+        billingScope: { $ne: "optional_stripping_stuffing" },
     };
     if (req.query.rateType && req.query.rateType !== "all") {
         query.rateType = normalizeRateType(req.query.rateType);
     }
-    query.billingScope = { $ne: "optional_stripping_stuffing" };
-    const rates = await BillingRate_js_1.default.find(query).sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 });
-    const latestByCode = new Map();
-    for (const rate of rates) {
-        const key = `${normalizeRateType(rate.rateType)}:${String(rate.chargeCode || rate.description || rate._id)}`;
-        if (!latestByCode.has(key))
-            latestByCode.set(key, rate);
+    if (req.query.loadStatus && req.query.loadStatus !== "all") {
+        query.loadStatus = normalizeLoadStatus(req.query.loadStatus);
     }
-    return res.json({ success: true, rates: Array.from(latestByCode.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate) });
+    addEffectiveWindowFilter(query, now);
+    const rates = await BillingRate_js_1.default.find(query)
+        .sort({ category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 })
+        .lean();
+    const latestByConfig = new Map();
+    for (const rate of rates) {
+        const key = getRateConfigKey(rate);
+        if (!latestByConfig.has(key))
+            latestByConfig.set(key, rate);
+    }
+    return res.json({ success: true, rates: Array.from(latestByConfig.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate) });
 };
 exports.listActiveBillingRates = listActiveBillingRates;

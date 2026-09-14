@@ -39,11 +39,15 @@ const billingRateSchema = new mongoose_1.default.Schema({
     freeDays: { type: Number, default: 0, min: 0 },
     minimumAmount: { type: Number, default: 0, min: 0 },
     effectiveDate: { type: Date, required: true, default: Date.now, index: true },
+    effectiveTo: { type: Date, default: null, index: true },
+    version: { type: Number, default: 1, min: 1 },
+    supersedesRate: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "BillingRate", default: null, index: true },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     notes: { type: String, default: "", trim: true },
     sortOrder: { type: Number, default: 100, index: true },
 }, { timestamps: true });
-billingRateSchema.index({ rateType: 1, chargeCode: 1, effectiveDate: -1 });
+billingRateSchema.index({ rateType: 1, chargeCode: 1, containerSize: 1, containerType: 1, loadStatus: 1, effectiveDate: -1 });
+billingRateSchema.index({ status: 1, effectiveDate: 1, effectiveTo: 1 });
 billingRateSchema.index({ status: 1, rateType: 1, category: 1, billingScope: 1, containerSize: 1, containerType: 1, loadStatus: 1, effectiveDate: -1 });
 billingRateSchema.pre("validate", function () {
     this.description = String(this.description || "").trim();
@@ -53,7 +57,11 @@ billingRateSchema.pre("validate", function () {
     this.billingScope = ["base", "storage", "optional_stripping_stuffing", "display_only"].includes(this.billingScope) ? this.billingScope : "base";
     this.containerSize = String(this.containerSize || "all");
     this.containerType = String(this.containerType || "all");
-    this.loadStatus = String(this.loadStatus || "all");
+    this.loadStatus = String(this.loadStatus || "all").trim().toLowerCase();
+    if (this.loadStatus === "loaded")
+        this.loadStatus = "laden";
+    if (!["all", "empty", "laden"].includes(this.loadStatus))
+        this.loadStatus = "all";
     const defaultUnitLabels = {
         per_container: "per container",
         per_teu: "per 20 ft equivalent",
@@ -66,5 +74,9 @@ billingRateSchema.pre("validate", function () {
     this.freeDays = Math.max(Number(this.freeDays) || 0, 0);
     this.minimumAmount = Math.max(Number(this.minimumAmount) || 0, 0);
     this.sortOrder = Number.isFinite(Number(this.sortOrder)) ? Number(this.sortOrder) : 100;
+    this.version = Math.max(Number(this.version) || 1, 1);
+    if (this.effectiveTo && this.effectiveDate && new Date(this.effectiveTo).getTime() <= new Date(this.effectiveDate).getTime()) {
+        this.invalidate("effectiveTo", "Effective To must be later than Effective Date.");
+    }
 });
 exports.default = mongoose_1.default.model("BillingRate", billingRateSchema);

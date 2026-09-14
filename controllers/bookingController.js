@@ -361,12 +361,33 @@ const rateMatchesBooking = (rate, booking) => {
         && (rateContainerType === "all" || rateContainerType === type)
         && (rateLoad === "all" || rateLoad === loadStatus);
 };
-const getLatestRateByChargeCode = (rates = []) => {
+const getRateSpecificity = (rate, booking) => {
+    let score = 0;
+    if (String(rate.containerSize || "all") !== "all") score += 1;
+    if (normalizeBillingRateKey(rate.containerType) !== "all") score += 2;
+    if (normalizeBillingRateKey(rate.loadStatus) !== "all") score += 4;
+    if (normalizeBillingRateKey(rate.loadStatus) === normalizeBillingRateKey(booking.containerLoadStatus)) score += 4;
+    return score;
+};
+const getLatestRateByChargeCode = (rates = [], booking = {}) => {
     const map = new Map();
     for (const rate of rates) {
         const key = String(rate.chargeCode || rate.description || rate._id);
-        if (!map.has(key))
+        const existing = map.get(key);
+        if (!existing) {
             map.set(key, rate);
+            continue;
+        }
+        const nextSpecificity = getRateSpecificity(rate, booking);
+        const existingSpecificity = getRateSpecificity(existing, booking);
+        if (nextSpecificity > existingSpecificity) {
+            map.set(key, rate);
+            continue;
+        }
+        if (nextSpecificity === existingSpecificity
+            && new Date(rate.effectiveDate || 0).getTime() > new Date(existing.effectiveDate || 0).getTime()) {
+            map.set(key, rate);
+        }
     }
     return Array.from(map.values());
 };
@@ -535,10 +556,33 @@ const getLoloPaymentStage = (booking = {}) => booking.loloPaymentStage === "gate
 const computeBookingBilling = async (booking, { asOf = new Date(), persist = false, useAsOfAsBillingEnd = false, phase = "auto" } = {}) => {
     const effectiveDate = new Date(asOf);
     const billingStage = resolveBillingStage(booking, phase);
+    const stageRateLock = billingStage === "gate_in"
+        ? booking.gateInRateEffectiveAt
+            || (booking.billingStage === "gate_in" ? booking.billingComputedAt : null)
+            || booking.approvedAt
+        : booking.gateOutRateEffectiveAt
+            || booking.gateOutRequestedAt
+            || (booking.billingStage === "gate_out" ? booking.billingComputedAt : null);
+    const rateEffectiveDate = new Date(stageRateLock || effectiveDate);
+    const normalizedRateEffectiveDate = Number.isNaN(rateEffectiveDate.getTime()) ? effectiveDate : rateEffectiveDate;
     const activeRates = await BillingRate_js_1.default.find({
-        status: "active",
         rateType: normalizeRateType(booking.rateType),
-        effectiveDate: { $lte: effectiveDate },
+        effectiveDate: { $lte: normalizedRateEffectiveDate },
+        $and: [
+            {
+                $or: [
+                    { effectiveTo: null },
+                    { effectiveTo: { $gt: normalizedRateEffectiveDate } },
+                    { effectiveTo: { $exists: false } },
+                ],
+            },
+            {
+                $or: [
+                    { status: "active" },
+                    { status: "inactive", effectiveTo: { $gt: normalizedRateEffectiveDate } },
+                ],
+            },
+        ],
     }).sort({ sortOrder: 1, chargeCode: 1, effectiveDate: -1, createdAt: -1 });
     const applicableRates = activeRates.filter((rate) => rateMatchesBooking(rate, booking) && shouldApplyBillingRate(rate, booking));
     const stagedRates = billingStage === "gate_in"
@@ -548,7 +592,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         : getLoloPaymentStage(booking) === "gate_in"
             ? applicableRates.filter((rate) => !isLiftOnLiftOffRate(rate))
             : applicableRates;
-    const matchedRates = getLatestRateByChargeCode(stagedRates);
+    const matchedRates = getLatestRateByChargeCode(stagedRates, booking);
     const storageDays = billingStage === "gate_out"
         ? getStorageDays(booking, effectiveDate, { useAsOfAsBillingEnd })
         : 0;
@@ -581,6 +625,9 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
             category: rate.category || "container_yard_operation",
             billingScope: rate.billingScope || "base",
             rateType: normalizeRateType(rate.rateType),
+            rateLoadStatus: rate.loadStatus || "all",
+            rateEffectiveDate: rate.effectiveDate || normalizedRateEffectiveDate,
+            rateVersion: Math.max(Number(rate.version) || 1, 1),
             amount: Math.round(amount * 100) / 100,
         };
     });
@@ -597,6 +644,9 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
             category: "custom",
             billingScope: "additional",
             rateType: normalizeRateType(booking.rateType),
+            rateLoadStatus: booking.containerLoadStatus || "all",
+            rateEffectiveDate: normalizedRateEffectiveDate,
+            rateVersion: 1,
             amount: Math.round((Number(item.amount) || ((Number(item.quantity) || 0) * (Number(item.rateAmount) || 0))) * 100) / 100,
         }))
         : [];
@@ -617,6 +667,7 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         total,
         days: storageDays,
         computedAt: effectiveDate,
+        rateEffectiveAt: normalizedRateEffectiveDate,
         hasMatchedRates: matchedRates.length > 0,
     };
     if (persist) {
@@ -628,6 +679,10 @@ const computeBookingBilling = async (booking, { asOf = new Date(), persist = fal
         booking.billingTotal = total;
         booking.billingDays = storageDays;
         booking.billingComputedAt = effectiveDate;
+        if (billingStage === "gate_in" && !booking.gateInRateEffectiveAt)
+            booking.gateInRateEffectiveAt = normalizedRateEffectiveDate;
+        if (billingStage === "gate_out" && !booking.gateOutRateEffectiveAt)
+            booking.gateOutRateEffectiveAt = normalizedRateEffectiveDate;
 
         // Gate-In and Gate-Out are separate billing transactions. A Gate-In
         // LOLO payment must never be deducted from the Gate-Out transaction
@@ -831,6 +886,8 @@ const safeBooking = (booking) => {
         totalPaidAmount,
         billingDays: Number(doc.billingDays) || 0,
         billingComputedAt: doc.billingComputedAt,
+        gateInRateEffectiveAt: doc.gateInRateEffectiveAt,
+        gateOutRateEffectiveAt: doc.gateOutRateEffectiveAt,
         billingPreviousTotal: Number(doc.billingPreviousTotal) || 0,
         billingRecomputedAt: doc.billingRecomputedAt,
         billingRecomputedByName: billingRecomputedBy?.name || "",
@@ -2920,10 +2977,7 @@ const updateApprovedPaymentAmount = async (req, res) => {
     });
 };
 exports.updateApprovedPaymentAmount = updateApprovedPaymentAmount;
-const requestBookingGateOut = async (req, res) => {
-    const booking = await Booking_js_1.default.findOne({ _id: req.params.id, client: req.user._id });
-    if (!booking)
-        return res.status(404).json({ success: false, message: "Booking not found." });
+const processBookingGateOutRequest = async ({ booking, req, res, requestedBy = "client" }) => {
     if (booking.status !== "stored_in_assigned_area") {
         return res.status(400).json({ success: false, message: "Gate-out can only be requested after the container is stored in the assigned area." });
     }
@@ -2940,13 +2994,20 @@ const requestBookingGateOut = async (req, res) => {
     catch (error) {
         return handleValidationError(error, res);
     }
+    const clientUserId = booking.client?._id || booking.client;
     booking.outDate = gateOutDate.outDate;
+    booking.gateOutRequestedAt = new Date();
+    booking.gateOutRateEffectiveAt = booking.gateOutRateEffectiveAt || booking.gateOutRequestedAt;
     const billingResult = await (0, exports.computeBookingBilling)(booking, { asOf: gateOutDate.outDate, persist: true, phase: "gate_out" });
     if (!billingResult.hasMatchedRates) {
-        return res.status(400).json({ success: false, message: "No active billing rate matched this booking. Please ask admin to complete Rate Setup first." });
+        return res.status(400).json({ success: false, message: requestedBy === "admin"
+            ? "No active billing rate matched this booking. Please complete Rate Setup first."
+            : "No active billing rate matched this booking. Please ask admin to complete Rate Setup first." });
     }
     if (billingResult.total <= 0) {
-        return res.status(400).json({ success: false, message: "Computed billing amount is zero. Please ask admin to review the rate setup." });
+        return res.status(400).json({ success: false, message: requestedBy === "admin"
+            ? "Computed billing amount is zero. Please review the rate setup."
+            : "Computed billing amount is zero. Please ask admin to review the rate setup." });
     }
     // Gate-Out is a new transaction. Do not deduct the previously paid
     // Gate-In LOLO amount; the Gate-Out balance is the full Gate-Out bill.
@@ -2959,10 +3020,10 @@ const requestBookingGateOut = async (req, res) => {
     booking.gateOutGracePeriodMinutes = getGateOutGracePeriodMinutes(booking);
     booking.gateOutScheduleStatus = "scheduled";
     booking.gateOutOverstayStartedAt = new Date(gateOutDate.outDate.getTime() + booking.gateOutGracePeriodMinutes * 60 * 1000);
-    booking.gateOutRequestedAt = new Date();
     booking.gateOutRequestRemarks = req.body.remarks || "";
+    const requesterLabel = requestedBy === "admin" ? "admin from Inventory" : "client";
     addHistory(booking, {
-        remarks: `Gate-out requested by client for ${gateOutDate.outDate.toLocaleString()}. ${getLoloPaymentStage(booking) === "gate_out" ? "LOLO is collected in this Gate-Out bill together with storage and other charges." : "Previously approved Gate-In LOLO payment remains a separate Gate-In transaction and is not deducted from the Gate-Out bill."} Gross Gate-Out bill PHP ${billingResult.total.toLocaleString()}, Gate-Out balance due PHP ${gateOutBalanceDue.toLocaleString()}, using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`,
+        remarks: `Gate-out requested by ${requesterLabel} for ${gateOutDate.outDate.toLocaleString()}. ${getLoloPaymentStage(booking) === "gate_out" ? "LOLO is collected in this Gate-Out bill together with storage and other charges." : "Previously approved Gate-In LOLO payment remains a separate Gate-In transaction and is not deducted from the Gate-Out bill."} Gross Gate-Out bill PHP ${billingResult.total.toLocaleString()}, Gate-Out balance due PHP ${gateOutBalanceDue.toLocaleString()}, using ${billingResult.days} calendar billing day${billingResult.days === 1 ? "" : "s"}.`,
         changedBy: req.user._id,
     });
     await booking.save();
@@ -2971,25 +3032,54 @@ const requestBookingGateOut = async (req, res) => {
     await booking.populate("assignedBlock", "name code");
     const payload = safeBooking(booking);
     (0, socket_js_1.emitToAdmins)("booking:gate_out_requested", payload);
-    (0, socket_js_1.emitToUser)(req.user._id, "booking:gate_out_requested", payload);
-    await notifyClient(booking, "Gate-out date submitted", "Your Date Out was submitted. The Gate-Out transaction is billed separately, including applicable storage and other Gate-Out charges. Any Gate-In LOLO payment remains recorded under the separate Gate-In transaction.", [
-        { label: "Container", value: booking.containerNumber },
-        { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
-        { label: "Gate-Out Gross Bill", value: `PHP ${booking.billingTotal.toLocaleString()}` },
-        { label: "Gate-Out Balance Due", value: `PHP ${gateOutBalanceDue.toLocaleString()}` },
-    ]);
-    await notifyAdmin(booking, "Gate-out requested", "A client has submitted Date Out and requested gate-out release.", [
-        { label: "Client", value: getClientDisplayName(booking.client) },
-        { label: "Container", value: booking.containerNumber },
-        { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
-    ]);
+    (0, socket_js_1.emitToUser)(clientUserId, "booking:gate_out_requested", payload);
+    await notifyClient(
+        booking,
+        requestedBy === "admin" ? "Gate-out scheduled by yard administrator" : "Gate-out date submitted",
+        requestedBy === "admin"
+            ? "Your container Gate-Out was initiated from Inventory. The Gate-Out transaction is billed separately, including applicable storage and other Gate-Out charges."
+            : "Your Date Out was submitted. The Gate-Out transaction is billed separately, including applicable storage and other Gate-Out charges. Any Gate-In LOLO payment remains recorded under the separate Gate-In transaction.",
+        [
+            { label: "Container", value: booking.containerNumber },
+            { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
+            { label: "Gate-Out Gross Bill", value: `PHP ${booking.billingTotal.toLocaleString()}` },
+            { label: "Gate-Out Balance Due", value: `PHP ${gateOutBalanceDue.toLocaleString()}` },
+        ]
+    );
+    await notifyAdmin(
+        booking,
+        requestedBy === "admin" ? "Gate-out initiated from Inventory" : "Gate-out requested",
+        requestedBy === "admin"
+            ? "An administrator initiated Gate-Out for a stored container from the Inventory module."
+            : "A client has submitted Date Out and requested gate-out release.",
+        [
+            { label: "Client", value: getClientDisplayName(booking.client) },
+            { label: "Container", value: booking.containerNumber },
+            { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
+        ]
+    );
     return res.json({
         success: true,
-        message: "Gate-out request submitted. The separate Gate-Out transaction, including applicable storage charges, is ready for payment.",
+        message: requestedBy === "admin"
+            ? "Gate-out initiated from Inventory. The Gate-Out billing transaction is now ready for payment and approval."
+            : "Gate-out request submitted. The separate Gate-Out transaction, including applicable storage charges, is ready for payment.",
         booking: payload,
     });
 };
+const requestBookingGateOut = async (req, res) => {
+    const booking = await Booking_js_1.default.findOne({ _id: req.params.id, client: req.user._id });
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    return processBookingGateOutRequest({ booking, req, res, requestedBy: "client" });
+};
 exports.requestBookingGateOut = requestBookingGateOut;
+const requestBookingGateOutByAdmin = async (req, res) => {
+    const booking = await Booking_js_1.default.findById(req.params.id);
+    if (!booking)
+        return res.status(404).json({ success: false, message: "Booking not found." });
+    return processBookingGateOutRequest({ booking, req, res, requestedBy: "admin" });
+};
+exports.requestBookingGateOutByAdmin = requestBookingGateOutByAdmin;
 const cancelBooking = async (req, res) => {
     const booking = await Booking_js_1.default.findById(req.params.id);
     if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });

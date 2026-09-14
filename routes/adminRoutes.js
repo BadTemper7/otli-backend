@@ -109,6 +109,8 @@ router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inv
 router.get("/inventory/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryContainers));
 router.post("/inventory/containers/legacy", authMiddleware_js_1.superAdminOnly, uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
 router.patch("/inventory/containers/:id/assign", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(inventoryController_js_1.assignInventoryContainer));
+router.post("/inventory/containers/:id/gate-out-request", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.requestBookingGateOutByAdmin));
+router.patch("/inventory/containers/:id/gate-out/complete", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut));
 router.get("/inventory/summary", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
 router.get("/inventory/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
 router.get("/inventory/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));

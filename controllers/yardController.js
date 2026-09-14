@@ -194,44 +194,66 @@ const loadAreaStats = async () => {
     }, {});
 };
 const getYardSummary = async (req, res) => {
-    const [areas, blocks] = await Promise.all([
-        YardArea_js_1.default.find().lean(),
-        YardBlock_js_1.default.find().lean(),
+    const [areaRows, blockRows] = await Promise.all([
+        YardArea_js_1.default.aggregate([
+            {
+                $group: {
+                    _id: null,
+                    areaCount: { $sum: 1 },
+                    totalAreaCapacityTeu: {
+                        $sum: { $cond: [{ $eq: ["$containerSize", 20] }, { $ifNull: ["$capacityTeu", 0] }, 0] },
+                    },
+                    totalAreaCapacityFeu: {
+                        $sum: { $cond: [{ $eq: ["$containerSize", 40] }, { $ifNull: ["$capacityTeu", 0] }, 0] },
+                    },
+                    totalBoxes: {
+                        $sum: {
+                            $multiply: [
+                                { $ifNull: ["$lineCount", 1] },
+                                { $ifNull: ["$rowCount", 1] },
+                                { $ifNull: ["$tierCount", 1] },
+                            ],
+                        },
+                    },
+                },
+            },
+        ]),
+        YardBlock_js_1.default.aggregate([
+            {
+                $group: {
+                    _id: null,
+                    blockCount: { $sum: 1 },
+                    totalBlockCapacityTeu: {
+                        $sum: { $cond: [{ $eq: ["$containerSize", 20] }, { $ifNull: ["$teuSlots", 0] }, 0] },
+                    },
+                    totalBlockCapacityFeu: {
+                        $sum: { $cond: [{ $eq: ["$containerSize", 40] }, { $ifNull: ["$teuSlots", 0] }, 0] },
+                    },
+                    occupiedSlots: { $sum: { $ifNull: ["$occupiedSlots", 0] } },
+                },
+            },
+        ]),
     ]);
-    const areaTotals = areas.reduce((totals, area) => {
-        const capacity = Number(area.capacityTeu) || 0;
-        const boxes = (Number(area.lineCount) || 1) * (Number(area.rowCount) || 1) * (Number(area.tierCount) || 1);
-        if (Number(area.containerSize) === 20)
-            totals.totalAreaCapacityTeu += capacity;
-        else
-            totals.totalAreaCapacityFeu += capacity;
-        totals.totalBoxes += boxes;
-        return totals;
-    }, { totalAreaCapacityTeu: 0, totalAreaCapacityFeu: 0, totalBoxes: 0 });
-    const blockTotals = blocks.reduce((totals, block) => {
-        const capacity = Number(block.teuSlots) || 0;
-        if (Number(block.containerSize) === 20)
-            totals.totalBlockCapacityTeu += capacity;
-        else
-            totals.totalBlockCapacityFeu += capacity;
-        totals.occupiedSlots += Number(block.occupiedSlots) || 0;
-        return totals;
-    }, { totalBlockCapacityTeu: 0, totalBlockCapacityFeu: 0, occupiedSlots: 0 });
+    const areaTotals = areaRows[0] || { areaCount: 0, totalAreaCapacityTeu: 0, totalAreaCapacityFeu: 0, totalBoxes: 0 };
+    const blockTotals = blockRows[0] || { blockCount: 0, totalBlockCapacityTeu: 0, totalBlockCapacityFeu: 0, occupiedSlots: 0 };
     return res.json({
         success: true,
         summary: {
-            areaCount: areas.length,
-            blockCount: blocks.length,
-            ...areaTotals,
-            ...blockTotals,
-            totalTeuSlots: blockTotals.totalBlockCapacityTeu,
-            occupiedSlots: blockTotals.occupiedSlots,
+            areaCount: Number(areaTotals.areaCount) || 0,
+            blockCount: Number(blockTotals.blockCount) || 0,
+            totalAreaCapacityTeu: Number(areaTotals.totalAreaCapacityTeu) || 0,
+            totalAreaCapacityFeu: Number(areaTotals.totalAreaCapacityFeu) || 0,
+            totalBoxes: Number(areaTotals.totalBoxes) || 0,
+            totalBlockCapacityTeu: Number(blockTotals.totalBlockCapacityTeu) || 0,
+            totalBlockCapacityFeu: Number(blockTotals.totalBlockCapacityFeu) || 0,
+            totalTeuSlots: Number(blockTotals.totalBlockCapacityTeu) || 0,
+            occupiedSlots: Number(blockTotals.occupiedSlots) || 0,
         },
     });
 };
 exports.getYardSummary = getYardSummary;
 const listYardAreas = async (req, res) => {
-    const areas = await YardArea_js_1.default.find().sort({ name: 1 });
+    const areas = await YardArea_js_1.default.find().sort({ name: 1 }).lean();
     const statsByArea = await loadAreaStats();
     return res.json({
         success: true,
