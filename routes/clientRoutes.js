@@ -24,6 +24,7 @@ router.get("/account-status", (req, res) => {
     });
 });
 router.get("/rates", (0, asyncHandler_js_1.default)(billingRateController_js_1.listActiveBillingRates));
+router.get("/rate-change-notice", (0, asyncHandler_js_1.default)(billingRateController_js_1.getClientRateChangeNotice));
 router.get("/payment-types", (0, asyncHandler_js_1.default)(paymentTypeController_js_1.listActivePaymentTypes));
 router.get("/notifications", (0, asyncHandler_js_1.default)(notificationController_js_1.listClientNotifications));
 router.patch("/notifications/read-all", (0, asyncHandler_js_1.default)(notificationController_js_1.markAllNotificationsRead));

@@ -18,4 +18,14 @@ const notificationSchema = new mongoose_1.default.Schema({
 }, { timestamps: true });
 notificationSchema.index({ recipient: 1, createdAt: -1 });
 notificationSchema.index({ recipient: 1, readAt: 1, createdAt: -1 });
+notificationSchema.index(
+    { recipient: 1, type: 1, "metadata.noticeKey": 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            type: "rate_change",
+            "metadata.noticeKey": { $type: "string" },
+        },
+    },
+);
 exports.default = mongoose_1.default.model("Notification", notificationSchema);

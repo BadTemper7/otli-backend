@@ -3,8 +3,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.listActiveBillingRates = exports.deleteBillingRate = exports.seedReferenceBillingRates = exports.updateBillingRate = exports.createBillingRate = exports.listBillingRates = exports.OTLI_REFERENCE_RATES = void 0;
+exports.getClientRateChangeNotice = exports.listActiveBillingRates = exports.deleteBillingRate = exports.seedReferenceBillingRates = exports.updateBillingRate = exports.createBillingRate = exports.listBillingRates = exports.OTLI_REFERENCE_RATES = void 0;
 const BillingRate_js_1 = __importDefault(require("../models/BillingRate.js"));
+const Notification_js_1 = __importDefault(require("../models/Notification.js"));
+const notificationService_js_1 = require("../utils/notificationService.js");
 const socket_js_1 = require("../socket/socket.js");
 const toNumber = (value, fallback = 0) => {
     const parsed = Number(value);
@@ -308,7 +310,9 @@ const validateConfiguredRate = (payload) => {
     return "";
 };
 const findCurrentMatchingRate = async (payload, excludeId = null) => {
-    const now = new Date();
+    // The open-ended version may be effective now or scheduled for the future.
+    // Treat either as the current configuration head so duplicate future
+    // versions cannot be scheduled accidentally.
     const query = {
         rateType: payload.rateType,
         chargeCode: payload.chargeCode,
@@ -316,49 +320,70 @@ const findCurrentMatchingRate = async (payload, excludeId = null) => {
         containerType: payload.containerType,
         loadStatus: payload.loadStatus,
         status: "active",
+        $or: [{ effectiveTo: null }, { effectiveTo: { $exists: false } }],
     };
     if (excludeId)
         query._id = { $ne: excludeId };
-    addEffectiveWindowFilter(query, now);
     return BillingRate_js_1.default.findOne(query).sort({ effectiveDate: -1, createdAt: -1 });
 };
-const closeRateVersion = async (rate, effectiveTo, { markInactive = true } = {}) => {
+const closeRateVersion = async (rate, effectiveTo, { markInactive = null } = {}) => {
     const closeAt = new Date(effectiveTo);
     rate.effectiveTo = closeAt;
-    if (markInactive)
+    const shouldMarkInactive = markInactive === null ? closeAt.getTime() <= Date.now() : Boolean(markInactive);
+    if (shouldMarkInactive)
         rate.status = "inactive";
+    else
+        rate.status = "active";
     await rate.save();
     return rate;
 };
 const listBillingRates = async (req, res) => {
     const { status, search, category, rateType, loadStatus } = req.query;
     const now = new Date();
-    const query = {};
+    const baseQuery = {};
     if (status && status !== "all")
-        query.status = status;
+        baseQuery.status = status;
     else
-        query.status = "active";
+        baseQuery.status = "active";
     if (category && category !== "all")
-        query.category = category;
+        baseQuery.category = category;
     if (rateType && rateType !== "all")
-        query.rateType = normalizeRateType(rateType);
+        baseQuery.rateType = normalizeRateType(rateType);
     if (loadStatus && loadStatus !== "all")
-        query.loadStatus = normalizeLoadStatus(loadStatus);
+        baseQuery.loadStatus = normalizeLoadStatus(loadStatus);
     if (search) {
         const term = String(search).trim();
-        query.$or = [
+        baseQuery.$or = [
             { description: { $regex: term, $options: "i" } },
             { chargeCode: { $regex: term, $options: "i" } },
             { unitLabel: { $regex: term, $options: "i" } },
             { notes: { $regex: term, $options: "i" } },
         ];
     }
-    query.billingScope = { $ne: "optional_stripping_stuffing" };
-    addEffectiveWindowFilter(query, now);
-    const rates = await BillingRate_js_1.default.find(query)
-        .sort({ rateType: 1, category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 })
-        .limit(500)
-        .lean();
+    baseQuery.billingScope = { $ne: "optional_stripping_stuffing" };
+
+    const currentQuery = { ...baseQuery };
+    addEffectiveWindowFilter(currentQuery, now);
+    const scheduledQuery = {
+        ...baseQuery,
+        status: "active",
+        effectiveDate: { $gt: now },
+        $and: [
+            ...(baseQuery.$and || []),
+            { $or: [{ effectiveTo: null }, { effectiveTo: { $gt: now } }, { effectiveTo: { $exists: false } }] },
+        ],
+    };
+
+    const [rates, scheduledRates] = await Promise.all([
+        BillingRate_js_1.default.find(currentQuery)
+            .sort({ rateType: 1, category: 1, sortOrder: 1, effectiveDate: -1, createdAt: -1 })
+            .limit(500)
+            .lean(),
+        BillingRate_js_1.default.find(scheduledQuery)
+            .sort({ effectiveDate: 1, rateType: 1, category: 1, sortOrder: 1, createdAt: 1 })
+            .limit(500)
+            .lean(),
+    ]);
     const latestByConfig = new Map();
     for (const rate of rates) {
         const key = getRateConfigKey(rate);
@@ -368,11 +393,19 @@ const listBillingRates = async (req, res) => {
     return res.json({
         success: true,
         rates: Array.from(latestByConfig.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate),
+        scheduledRates: scheduledRates.filter((rate) => !isDocumentationRate(rate)).map(safeRate),
         referenceRates: exports.OTLI_REFERENCE_RATES.filter((rate) => rate.billingScope !== "optional_stripping_stuffing" && !isDocumentationRate(rate)),
     });
 };
 exports.listBillingRates = listBillingRates;
 const createBillingRate = async (req, res) => {
+    if (!req.body?.effectiveDate) {
+        return res.status(400).json({ success: false, message: "Effectivity date is required for every new billing rate." });
+    }
+    const requestedEffectiveDate = new Date(req.body.effectiveDate);
+    if (Number.isNaN(requestedEffectiveDate.getTime())) {
+        return res.status(400).json({ success: false, message: "Select a valid effectivity date for the new rate." });
+    }
     const payload = buildRatePayload(req.body);
     if (!payload.description || !payload.unitLabel) {
         return res.status(400).json({ success: false, message: "Description and Unit are required." });
@@ -397,11 +430,18 @@ const createBillingRate = async (req, res) => {
 };
 exports.createBillingRate = createBillingRate;
 const updateBillingRate = async (req, res) => {
+    if (!req.body?.effectiveDate) {
+        return res.status(400).json({ success: false, message: "Effectivity date is required when applying a new rate version." });
+    }
     const currentRate = await BillingRate_js_1.default.findById(req.params.id);
     if (!currentRate)
         return res.status(404).json({ success: false, message: "Billing rate not found." });
-    if (currentRate.effectiveTo && new Date(currentRate.effectiveTo).getTime() <= Date.now()) {
+    const now = new Date();
+    if (currentRate.effectiveTo && new Date(currentRate.effectiveTo).getTime() <= now.getTime()) {
         return res.status(409).json({ success: false, message: "This is a historical rate version and cannot be edited. Edit the current rate instead." });
+    }
+    if (currentRate.effectiveTo && new Date(currentRate.effectiveTo).getTime() > now.getTime()) {
+        return res.status(409).json({ success: false, message: "This rate already has a scheduled replacement. Cancel the scheduled rate first if you need to change the effectivity date or amount." });
     }
     const payload = buildRatePayload(req.body, currentRate);
     if (!payload.description || !payload.unitLabel) {
@@ -417,11 +457,13 @@ const updateBillingRate = async (req, res) => {
     if (validationError)
         return res.status(400).json({ success: false, message: validationError });
     const currentStart = new Date(currentRate.effectiveDate || currentRate.createdAt || 0).getTime();
-    let nextEffectiveAt = new Date(payload.effectiveDate || Date.now());
-    if (Number.isNaN(nextEffectiveAt.getTime()))
-        nextEffectiveAt = new Date();
-    if (nextEffectiveAt.getTime() <= currentStart)
-        nextEffectiveAt = new Date(Math.max(Date.now(), currentStart + 1));
+    const nextEffectiveAt = new Date(payload.effectiveDate || Date.now());
+    if (Number.isNaN(nextEffectiveAt.getTime())) {
+        return res.status(400).json({ success: false, message: "Select a valid effectivity date for the new rate." });
+    }
+    if (nextEffectiveAt.getTime() <= currentStart) {
+        return res.status(400).json({ success: false, message: "The new effectivity date must be later than the current rate's effective date." });
+    }
     payload.effectiveDate = nextEffectiveAt;
     payload.effectiveTo = null;
     payload.status = "active";
@@ -429,7 +471,7 @@ const updateBillingRate = async (req, res) => {
     payload.supersedesRate = currentRate._id;
     const conflicting = await findCurrentMatchingRate(payload, currentRate._id);
     if (conflicting) {
-        return res.status(409).json({ success: false, message: "Another current rate already exists for the same charge and Empty/Loaded classification." });
+        return res.status(409).json({ success: false, message: "Another current or scheduled rate already exists for the same charge and Empty/Loaded classification." });
     }
     const newRate = await BillingRate_js_1.default.create(payload);
     try {
@@ -440,12 +482,16 @@ const updateBillingRate = async (req, res) => {
         throw error;
     }
     const safe = safeRate(newRate);
-    (0, socket_js_1.emitToAdmins)("billing_rate:updated", { ...safe, previousRateId: String(currentRate._id), versioned: true });
+    const isScheduled = nextEffectiveAt.getTime() > now.getTime();
+    (0, socket_js_1.emitToAdmins)("billing_rate:updated", { ...safe, previousRateId: String(currentRate._id), versioned: true, scheduled: isScheduled });
     return res.json({
         success: true,
-        message: "Billing rate updated as a new version. Previous transactions remain on their original rate snapshot.",
+        message: isScheduled
+            ? "New billing rate version scheduled successfully. The existing rate remains applicable until the effectivity date."
+            : "Billing rate updated as a new effective version. Historical rate periods were preserved.",
         rate: safe,
         previousRateId: String(currentRate._id),
+        scheduled: isScheduled,
     });
 };
 exports.updateBillingRate = updateBillingRate;
@@ -513,20 +559,133 @@ const deleteBillingRate = async (req, res) => {
         return res.status(404).json({ success: false, message: "Billing rate not found." });
     const safe = safeRate(rate);
     const now = new Date();
+    const startsAt = new Date(rate.effectiveDate);
+    const isScheduled = startsAt.getTime() > now.getTime();
+    if (isScheduled) {
+        const supersededRateId = rate.supersedesRate;
+        await rate.deleteOne();
+        if (supersededRateId) {
+            const previousRate = await BillingRate_js_1.default.findById(supersededRateId);
+            if (previousRate && previousRate.effectiveTo && new Date(previousRate.effectiveTo).getTime() === startsAt.getTime()) {
+                previousRate.effectiveTo = null;
+                previousRate.status = "active";
+                await previousRate.save();
+            }
+        }
+        (0, socket_js_1.emitToAdmins)("billing_rate:deleted", { ...safe, scheduled: true });
+        return res.json({ success: true, message: "Scheduled rate change cancelled. The current rate will continue without interruption." });
+    }
     if (!rate.effectiveTo || new Date(rate.effectiveTo).getTime() > now.getTime()) {
-        if (new Date(rate.effectiveDate).getTime() >= now.getTime()) {
-            await rate.deleteOne();
-        }
-        else {
-            rate.effectiveTo = now;
-            rate.status = "inactive";
-            await rate.save();
-        }
+        rate.effectiveTo = now;
+        rate.status = "inactive";
+        await rate.save();
     }
     (0, socket_js_1.emitToAdmins)("billing_rate:deleted", safe);
-    return res.json({ success: true, message: "Billing rate deactivated. Historical transactions and past rate versions were preserved." });
+    return res.json({ success: true, message: "Billing rate deactivated. Historical transactions and past rate periods were preserved." });
 };
 exports.deleteBillingRate = deleteBillingRate;
+const getManilaDayRange = (value = new Date()) => {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Manila",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    });
+    const parts = Object.fromEntries(formatter.formatToParts(value).map((part) => [part.type, part.value]));
+    const year = Number(parts.year);
+    const month = Number(parts.month);
+    const day = Number(parts.day);
+    const start = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0) - (8 * 60 * 60 * 1000));
+    const end = new Date(start.getTime() + (24 * 60 * 60 * 1000));
+    return { start, end, dateKey: `${parts.year}-${parts.month}-${parts.day}` };
+};
+const getClientRateChangeNotice = async (req, res) => {
+    const now = new Date();
+    const { start, end, dateKey } = getManilaDayRange(now);
+    const rateType = normalizeRateType(req.user?.companyMarket);
+    const changedRates = await BillingRate_js_1.default.find({
+        rateType,
+        effectiveDate: { $gte: start, $lt: end },
+        billingScope: { $ne: "optional_stripping_stuffing" },
+        status: { $in: ["active", "inactive"] },
+    })
+        .sort({ sortOrder: 1, chargeCode: 1, containerSize: 1, loadStatus: 1, createdAt: 1 })
+        .populate("supersedesRate")
+        .lean();
+    const visibleChanges = changedRates.filter((rate) => !isDocumentationRate(rate));
+    if (!visibleChanges.length) {
+        return res.json({ success: true, notice: null, changes: [] });
+    }
+    const rateIds = visibleChanges.map((rate) => String(rate._id)).sort();
+    // One popup per client, market, and effectivity day. If several rates
+    // share the same date they are consolidated into this single notice.
+    const noticeKey = `rate-change:${rateType}:${dateKey}`;
+    let notification = await Notification_js_1.default.findOne({
+        recipient: req.user._id,
+        type: "rate_change",
+        "metadata.noticeKey": noticeKey,
+    });
+    if (notification?.readAt) {
+        return res.json({ success: true, notice: null, acknowledged: true, changes: [] });
+    }
+    const changes = visibleChanges.map((rate) => {
+        const previousRate = rate.supersedesRate && typeof rate.supersedesRate === "object" ? rate.supersedesRate : null;
+        return {
+            id: String(rate._id),
+            chargeType: getChargeType(rate),
+            description: rate.description || "Billing Rate",
+            chargeCode: rate.chargeCode || "",
+            containerSize: rate.containerSize || "all",
+            loadStatus: normalizeLoadStatus(rate.loadStatus),
+            previousRateAmount: previousRate ? Number(previousRate.rateAmount) || 0 : null,
+            rateAmount: Number(rate.rateAmount) || 0,
+            effectiveDate: rate.effectiveDate,
+            version: Math.max(Number(rate.version) || 1, 1),
+        };
+    });
+    if (!notification) {
+        try {
+            notification = await Notification_js_1.default.create({
+                recipient: req.user._id,
+                type: "rate_change",
+                title: "New rates effective today",
+                message: `Updated ${rateType === "international" ? "International" : "Local"} rates are effective ${dateKey}. Ongoing transactions will use the previous rate before the effectivity date and the new rate from the effectivity date onward.`,
+                actionPath: "/rates",
+                metadata: {
+                    noticeKey,
+                    rateType,
+                    effectiveDate: dateKey,
+                    rateIds,
+                },
+            });
+            const payload = (0, notificationService_js_1.safeNotification)(notification);
+            (0, socket_js_1.emitToUser)(req.user._id, "notification:created", payload);
+        }
+        catch (error) {
+            if (error?.code === 11000) {
+                notification = await Notification_js_1.default.findOne({
+                    recipient: req.user._id,
+                    type: "rate_change",
+                    "metadata.noticeKey": noticeKey,
+                });
+            }
+            else {
+                throw error;
+            }
+        }
+    }
+    if (notification?.readAt) {
+        return res.json({ success: true, notice: null, acknowledged: true, changes: [] });
+    }
+    return res.json({
+        success: true,
+        notice: (0, notificationService_js_1.safeNotification)(notification),
+        effectiveDate: dateKey,
+        rateType,
+        changes,
+    });
+};
+exports.getClientRateChangeNotice = getClientRateChangeNotice;
 const listActiveBillingRates = async (req, res) => {
     const now = new Date();
     const query = {
