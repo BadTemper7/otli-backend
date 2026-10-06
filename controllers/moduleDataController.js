@@ -80,6 +80,7 @@ const getInventoryModuleData = async (req, res) => {
     return res.json({
         success: true,
         containers: table.containers || [],
+        visualContainers: table.visualContainers || [],
         pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
         stats: table.stats,
         truncated: Boolean(table.truncated),

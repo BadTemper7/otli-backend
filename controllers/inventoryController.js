@@ -773,6 +773,38 @@ const listInventoryContainers = async (req, res) => {
     containers.forEach((item) => mapped.set(`legacy:${String(item._id)}`, { ...safeContainer(item), source: "pre_advice" }));
     const result = pageRefs.map((item) => mapped.get(`${item.source}:${String(item._id)}`)).filter(Boolean);
 
+    let visualContainers;
+    const includeVisualization = String(req.query.includeVisualization || "false").toLowerCase() === "true" && Boolean(areaId);
+    if (includeVisualization) {
+        // Storage Monitoring needs the complete lightweight yard allocation for the
+        // selected area so its block list and 3D slot map are not limited to the
+        // current table page. Keep the table paginated, but return visualization
+        // records in the same HTTP response. The selected block is intentionally
+        // ignored here so switching the block only changes the focused map while
+        // the full area allocation remains available.
+        const visualLegacyQuery = { ...query };
+        const visualBookingQuery = { ...bookingQuery };
+        delete visualLegacyQuery.block;
+        delete visualBookingQuery.assignedBlock;
+        const visualizationLimit = Math.min(Math.max(Number(req.query.visualizationLimit) || 2000, 100), 5000);
+        const [visualLegacy, visualBookings] = await Promise.all([
+            includeLegacy ? InventoryContainer_js_1.default.find(visualLegacyQuery)
+                .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
+                .limit(visualizationLimit)
+                .populate("client", "name email companyName").populate("area", "name code").populate("block", "name code")
+                .populate("preAdvice", "preAdviceNumber status").populate("gateIn", "gateInNumber status completedAt").lean() : [],
+            includeBookings ? Booking_js_1.default.find(visualBookingQuery).select(INVENTORY_BOOKING_SELECT)
+                .sort({ gateInApprovedAt: -1, updatedAt: -1, _id: -1 })
+                .limit(visualizationLimit)
+                .populate("client", "name email companyName").populate("assignedArea", "name code").populate("assignedBlock", "name code")
+                .populate("legacyRegisteredBy", "name").lean() : [],
+        ]);
+        visualContainers = [
+            ...visualBookings.map((item) => safeBookingContainer(item)),
+            ...visualLegacy.map((item) => ({ ...safeContainer(item), source: "pre_advice" })),
+        ];
+    }
+
     let statsPayload;
     if (normalizedSource !== "legacy" && String(req.query.includeStats || "false").toLowerCase() === "true") {
         try { statsPayload = await loadInventoryStats(); }
@@ -782,6 +814,7 @@ const listInventoryContainers = async (req, res) => {
     return res.json({
         success: true,
         containers: result,
+        visualContainers,
         stats: statsPayload,
         pagination: { page, currentPage: page, limit, perPage: limit, total, totalPages },
         source: normalizedSource,
