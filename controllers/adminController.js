@@ -10,23 +10,32 @@ const socket_js_1 = require("../socket/socket.js");
 const permissions_js_1 = require("../utils/permissions.js");
 const notificationService_js_1 = require("../utils/notificationService.js");
 const listUsers = async (req, res) => {
-    const { userType, status, search } = req.query;
+    const { userType, status, search, role } = req.query;
     const filter = {};
-    if (userType)
-        filter.userType = userType;
-    if (status)
-        filter.status = status;
-    if (search) {
-        filter.$or = [
-            { name: { $regex: search, $options: "i" } },
-            { email: { $regex: search, $options: "i" } },
-            { companyName: { $regex: search, $options: "i" } },
-        ];
+    if (userType) filter.userType = userType;
+    if (status && status !== "all") {
+        const statuses = String(status).split(",").map((value) => value.trim()).filter(Boolean);
+        if (statuses.length) filter.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
     }
-    const users = await User_js_1.default.find(filter).sort({ createdAt: -1 });
+    if (role && role !== "all") {
+        const roles = String(role).split(",").map((value) => value.trim()).filter(Boolean);
+        if (roles.length) filter.role = roles.length === 1 ? roles[0] : { $in: roles };
+    }
+    if (search) {
+        const escaped = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(escaped, "i");
+        filter.$or = [{ name: pattern }, { email: pattern }, { companyName: pattern }];
+    }
+    const hasPaging = req.query.page !== undefined || req.query.limit !== undefined || req.query.pageSize !== undefined;
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 20, 1), 100);
+    const query = User_js_1.default.find(filter).sort({ createdAt: -1 });
+    if (hasPaging) query.skip((page - 1) * limit).limit(limit);
+    const [users, total] = await Promise.all([query, User_js_1.default.countDocuments(filter)]);
     return res.json({
         success: true,
         users: users.map(authController_js_1.safeUser),
+        pagination: { page, limit, total, totalPages: Math.max(Math.ceil(total / limit), 1) },
     });
 };
 exports.listUsers = listUsers;

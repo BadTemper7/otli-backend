@@ -292,6 +292,33 @@ const startServer = async () => {
   });
   console.log("✅ Connected to MongoDB successfully!");
 
+  // MongoDB cannot maintain a compound multikey index that includes two
+  // array fields. Older deployments created an index containing both
+  // `clients` and `transactions.transactionKey`, which causes inserts such as
+  // a Special Rate with multiple clients/transactions to fail with:
+  // "cannot index parallel arrays [clients] [transactions]".
+  //
+  // Remove only that legacy invalid index. The schema now keeps two safe
+  // indexes instead: one starting with `clients`, and another starting with
+  // `transactions.transactionKey`.
+  try {
+    const specialRatesCollection = mongoose.connection.collection("specialrates");
+    const indexes = await specialRatesCollection.indexes();
+
+    for (const index of indexes) {
+      const keys = index?.key || {};
+      if (keys.clients !== undefined && keys["transactions.transactionKey"] !== undefined) {
+        await specialRatesCollection.dropIndex(index.name);
+        console.log(`✅ Removed legacy Special Rate index: ${index.name}`);
+      }
+    }
+  } catch (indexError) {
+    // NamespaceNotFound simply means the collection has not been created yet.
+    // Do not prevent the API from starting for that case.
+    if (indexError?.codeName !== "NamespaceNotFound" && indexError?.code !== 26) {
+      throw indexError;
+    }
+  }
 
   httpServer.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);

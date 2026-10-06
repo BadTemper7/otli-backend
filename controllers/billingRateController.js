@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getClientRateChangeNotice = exports.listActiveBillingRates = exports.deleteBillingRate = exports.seedReferenceBillingRates = exports.updateBillingRate = exports.createBillingRate = exports.listBillingRates = exports.OTLI_REFERENCE_RATES = void 0;
 const BillingRate_js_1 = __importDefault(require("../models/BillingRate.js"));
+const SpecialRate_js_1 = __importDefault(require("../models/SpecialRate.js"));
 const Notification_js_1 = __importDefault(require("../models/Notification.js"));
 const notificationService_js_1 = require("../utils/notificationService.js");
 const socket_js_1 = require("../socket/socket.js");
@@ -705,9 +706,29 @@ const listActiveBillingRates = async (req, res) => {
     const latestByConfig = new Map();
     for (const rate of rates) {
         const key = getRateConfigKey(rate);
-        if (!latestByConfig.has(key))
-            latestByConfig.set(key, rate);
+        if (!latestByConfig.has(key)) latestByConfig.set(key, rate);
     }
-    return res.json({ success: true, rates: Array.from(latestByConfig.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate) });
+    let visibleRates = Array.from(latestByConfig.values()).filter((rate) => !isDocumentationRate(rate)).map(safeRate);
+    if (req.user?.userType === "client" && req.user?._id) {
+        const specialGroups = await SpecialRate_js_1.default.find({
+            clients: req.user._id,
+            status: "active",
+            effectiveDate: { $lte: now },
+            $or: [{ effectiveTo: null }, { effectiveTo: { $gt: now } }, { effectiveTo: { $exists: false } }],
+        }).sort({ effectiveDate: -1, updatedAt: -1 }).lean();
+        const overrides = new Map();
+        for (const group of specialGroups) {
+            for (const item of group.transactions || []) {
+                if (!overrides.has(String(item.transactionKey))) {
+                    overrides.set(String(item.transactionKey), { amount: Number(item.specialRateAmount) || 0, id: String(group._id), name: group.name, effectiveDate: group.effectiveDate });
+                }
+            }
+        }
+        visibleRates = visibleRates.map((rate) => {
+            const match = overrides.get(getRateConfigKey(rate));
+            return match ? { ...rate, generalRateAmount: rate.rateAmount, rateAmount: match.amount, isSpecialRate: true, specialRateId: match.id, specialRateName: match.name, specialRateEffectiveDate: match.effectiveDate } : rate;
+        });
+    }
+    return res.json({ success: true, rates: visibleRates });
 };
 exports.listActiveBillingRates = listActiveBillingRates;
