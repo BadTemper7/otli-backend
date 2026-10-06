@@ -39,24 +39,26 @@ const listPaymentHistory = async (req, res) => {
     }
     const pipeline = [
         { $match: match },
-        { $set: {
-            transactionEntries: {
-                $cond: [
-                    { $gt: [{ $size: { $ifNull: ["$paymentTransactions", []] } }, 0] },
-                    "$paymentTransactions",
-                    [null],
-                ],
-            },
+        { $unwind: { path: "$paymentTransactions", preserveNullAndEmptyArrays: true } },
+        { $addFields: {
+            transactionEntry: { $ifNull: ["$paymentTransactions", null] },
         } },
-        { $unwind: "$transactionEntries" },
-        { $set: { transactionEntry: "$transactionEntries" } },
         { $lookup: { from: "users", localField: "client", foreignField: "_id", as: "clientDoc" } },
-        { $set: {
+        { $addFields: {
             client: { $arrayElemAt: ["$clientDoc", 0] },
-            effectivePaymentType: { $toLower: { $ifNull: ["$transactionEntry.paymentTypeSnapshot.type", { $ifNull: ["$paymentTypeSnapshot.type", "unknown"] }] } },
+            effectivePaymentType: {
+                $toLower: {
+                    $convert: {
+                        input: { $ifNull: ["$paymentTransactions.paymentTypeSnapshot.type", { $ifNull: ["$paymentTypeSnapshot.type", "unknown"] }] },
+                        to: "string",
+                        onError: "unknown",
+                        onNull: "unknown",
+                    },
+                },
+            },
             effectivePaymentDate: { $ifNull: [
-                "$transactionEntry.paymentDate",
-                { $ifNull: ["$transactionEntry.approvedAt", { $ifNull: ["$paymentDate", { $ifNull: ["$paymentReviewedAt", "$updatedAt"] }] }] },
+                "$paymentTransactions.paymentDate",
+                { $ifNull: ["$paymentTransactions.approvedAt", { $ifNull: ["$paymentDate", { $ifNull: ["$paymentReviewedAt", "$updatedAt"] }] }] },
             ] },
         } },
         ...(Object.keys(postMatch).length ? [{ $match: postMatch }] : []),
