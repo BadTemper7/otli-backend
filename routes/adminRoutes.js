@@ -106,6 +106,7 @@ router.patch("/pre-advices/:id/confirm", (0, authMiddleware_js_1.requirePermissi
 router.patch("/pre-advices/:id/reject", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.rejectPreAdvice));
 router.get("/gate-in/ready", (0, authMiddleware_js_1.requirePermission)("gateIn", "view"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.listGateInReadyPreAdvices));
 router.post("/gate-in/:preAdviceId/complete", (0, authMiddleware_js_1.requirePermission)("gateIn", "create"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.completeGateIn));
+router.get("/yard/module-data", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getYardModuleData));
 router.get("/yard/summary", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
 router.get("/yard/areas", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
 router.post("/yard/areas", (0, authMiddleware_js_1.requirePermission)("yardSetup", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardArea));

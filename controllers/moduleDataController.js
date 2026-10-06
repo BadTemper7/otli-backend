@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getInventoryModuleData = exports.getBookingModuleData = void 0;
+exports.getYardModuleData = exports.getInventoryModuleData = exports.getBookingModuleData = void 0;
 const bookingController = require("./bookingController.js");
 const inventoryController = require("./inventoryController.js");
 const yardController = require("./yardController.js");
@@ -88,3 +88,22 @@ const getInventoryModuleData = async (req, res) => {
     });
 };
 exports.getInventoryModuleData = getInventoryModuleData;
+
+const getYardModuleData = async (req, res) => {
+    const [areasResult, summaryResult] = await Promise.all([
+        captureController(yardController.listYardAreas, req),
+        captureController(yardController.getYardSummary, req),
+    ]);
+    return res.json({
+        success: true,
+        areas: areasResult.areas || [],
+        summary: summaryResult.summary || {
+            areaCount: 0,
+            totalAreaCapacityTeu: 0,
+            totalAreaCapacityFeu: 0,
+            totalBoxes: 0,
+            blockCount: 0,
+        },
+    });
+};
+exports.getYardModuleData = getYardModuleData;
