@@ -1759,8 +1759,10 @@ const listAdminBookings = async (req, res) => {
     const query = {};
     if (clientId && clientId !== "all")
         query.client = clientId;
-    if (status && status !== "all")
-        query.status = status;
+    if (status && status !== "all") {
+        const statuses = String(status).split(",").map((item) => item.trim()).filter(Boolean);
+        query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
+    }
     if (billingStatus && billingStatus !== "all")
         query.billingStatus = billingStatus;
     if (["empty", "laden"].includes(String(loadStatus || "").toLowerCase()))
@@ -1787,14 +1789,30 @@ const listAdminBookings = async (req, res) => {
             { shippingLine: { $regex: term, $options: "i" } },
         ];
     }
-    const hasPaging = req.query.page !== undefined || req.query.limit !== undefined || req.query.pageSize !== undefined;
     const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 20, 1), 100);
-    const findQuery = populateBooking(Booking_js_1.default.find(query)).sort({ createdAt: -1 });
-    if (hasPaging) findQuery.skip((page - 1) * limit).limit(limit);
-    else findQuery.limit(300);
+    const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
+    const allowedSortFields = new Set(["createdAt", "updatedAt", "inDate", "outDate", "containerNumber", "bookingReference", "status"]);
+    const sortField = allowedSortFields.has(String(req.query.sort || "")) ? String(req.query.sort) : "createdAt";
+    const sortDirection = String(req.query.order || "desc").toLowerCase() === "asc" ? 1 : -1;
+    const sortSpec = { [sortField]: sortDirection, _id: sortDirection };
+    const findQuery = populateBooking(Booking_js_1.default.find(query))
+        .sort(sortSpec)
+        .skip((page - 1) * limit)
+        .limit(limit);
     const [bookings, total] = await Promise.all([findQuery.lean(), Booking_js_1.default.countDocuments(query)]);
-    return res.json({ success: true, bookings: bookings.map(safeBooking), pagination: { page, limit, total, totalPages: Math.max(Math.ceil(total / limit), 1) } });
+    const totalPages = Math.max(Math.ceil(total / limit), 1);
+    return res.json({
+        success: true,
+        bookings: bookings.map(safeBooking),
+        pagination: {
+            page,
+            currentPage: page,
+            limit,
+            perPage: limit,
+            total,
+            totalPages,
+        },
+    });
 };
 exports.listAdminBookings = listAdminBookings;
 const getAdminBookingCalendar = async (req, res) => {
