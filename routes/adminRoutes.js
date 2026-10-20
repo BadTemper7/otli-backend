@@ -1,7 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __importDefault =
+  (this && this.__importDefault) ||
+  function (mod) {
+    return mod && mod.__esModule ? mod : { default: mod };
+  };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const adminController_js_1 = require("../controllers/adminController.js");
@@ -24,116 +26,613 @@ const storageMonitoringController = require("../controllers/storageMonitoringCon
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.adminOnly);
 router.use(auditMiddleware_js_1.auditAdminMutations);
-router.get("/audit-logs", (0, authMiddleware_js_1.requirePermission)("reports", "view"), (0, asyncHandler_js_1.default)(auditController_js_1.listAuditLogs));
-router.get("/payments/history", (0, authMiddleware_js_1.requirePermission)("billing", "view"), (0, asyncHandler_js_1.default)(transactionController_js_1.listPaymentHistory));
-router.get("/dashboard", (0, authMiddleware_js_1.requirePermission)("dashboard", "view"), (0, asyncHandler_js_1.default)(reportController_js_1.getOperationsDashboard));
-router.get("/users", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(adminController_js_1.listUsers));
-router.get("/client-registrations", (0, authMiddleware_js_1.requirePermission)("clientVerification", "view"), (0, asyncHandler_js_1.default)(adminController_js_1.listClients));
-router.get("/users/:id", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(adminController_js_1.getUserById));
-router.post("/users", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(adminController_js_1.createAdminUser));
-router.patch("/users/:id", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(adminController_js_1.updateUser));
-router.delete("/users/:id", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser));
-router.patch("/clients/:id/approve", (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"), (0, asyncHandler_js_1.default)(adminController_js_1.approveClient));
-router.patch("/clients/:id/reject", (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"), (0, asyncHandler_js_1.default)(adminController_js_1.rejectClient));
-router.patch("/clients/:id", (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"), (0, asyncHandler_js_1.default)(adminController_js_1.updateUser));
-router.delete("/clients/:id", (0, authMiddleware_js_1.requirePermission)("clientVerification", "delete"), (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser));
-router.get("/reports/yard-containers", (0, authMiddleware_js_1.requirePermission)("reports", "view"), (0, asyncHandler_js_1.default)(reportController_js_1.getYardContainerReport));
-router.get("/bookings/module-data", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getBookingModuleData));
-router.get("/bookings/summary", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingSummary));
-router.get("/bookings", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
-router.get("/bookings/calendar", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBookingCalendar));
-router.get("/bookings/clients", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
-router.get("/bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
-router.get("/pre-advice-bookings/module-data", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getBookingModuleData));
-router.get("/pre-advice-bookings", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings));
-router.get("/pre-advice-bookings/yard/areas", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
-router.get("/pre-advice-bookings/yard/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listApprovalYardBlocks));
-router.get("/pre-advice-bookings/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));
-router.get("/pre-advice-bookings/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
-router.get("/pre-advice-bookings/:id/congestion-surcharge", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingCongestionSurchargeOption));
-router.patch("/pre-advice-bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
-router.patch("/pre-advice-bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
-router.patch("/pre-advice-bookings/:id/cancel", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
-router.get("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("bookings", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBooking));
-router.patch("/bookings/:id/rate-classification", (0, authMiddleware_js_1.requirePermission)("operations", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.updateBookingRateClassification));
-router.delete("/bookings/:id", (0, authMiddleware_js_1.requirePermission)("operations", "delete"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBooking));
-router.patch("/bookings/:id/approve", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking));
-router.patch("/bookings/:id/reject", (0, authMiddleware_js_1.requirePermission)("bookings", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking));
-router.patch("/bookings/:id/gate-in/details", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateBookingGateInDetails));
-router.patch("/bookings/:id/gate-in", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateIn));
-router.patch("/bookings/:id/gate-in/reject", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateIn));
-router.patch("/bookings/:id/gate-in/cancel", (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
-router.patch("/bookings/:id/store", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.markBookingStored));
-router.get("/bookings/:id/congestion-surcharge", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingCongestionSurchargeOption));
-router.post("/bookings/:id/congestion-surcharge", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.addBookingCongestionSurcharge));
-router.post("/bookings/:id/additional-charges", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.addBookingAdditionalCharge));
-router.delete("/bookings/:id/additional-charges/:chargeId", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBookingAdditionalCharge));
-router.patch("/bookings/:id/relocate", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.relocateBooking));
-router.post("/bookings/:id/payment/cash", (0, authMiddleware_js_1.requireAnyPermission)([["gateIn", "edit"], ["gateOut", "edit"]]), (0, asyncHandler_js_1.default)(bookingController_js_1.recordAdminCashPayment));
-router.patch("/bookings/:id/payment/approve", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingPayment));
-router.patch("/bookings/:id/payment/reject", (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingPayment));
-router.patch("/bookings/:id/payments/:transactionId/amount", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateApprovedPaymentAmount));
-router.patch("/bookings/:id/cancel", (0, authMiddleware_js_1.requirePermission)("operations", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking));
-router.patch("/bookings/:id/gate-out/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateOut));
-router.patch("/bookings/:id/gate-out/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateOut));
-router.patch("/bookings/:id/gate-out/dates", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.updateGateOutRequestDates));
-router.patch("/bookings/:id/gate-out/overstay-fee", authMiddleware_js_1.superAdminOnly, (0, asyncHandler_js_1.default)(bookingController_js_1.setBookingOverstayFeePolicy));
-router.patch("/bookings/:id/gate-out/reversal/approve", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.approveGateOutReversal));
-router.patch("/bookings/:id/gate-out/reversal/reject", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.rejectGateOutReversal));
-router.get("/bookings/:id/gate-out/billing-preview", (0, authMiddleware_js_1.requirePermission)("gateOut", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.previewGateOutBilling));
-router.patch("/bookings/:id/gate-out/recompute-billing", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.recomputeGateOutBilling));
-router.patch("/bookings/:id/gate-out/complete", (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut));
-router.get("/billing-rates", (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"), (0, asyncHandler_js_1.default)(billingRateController_js_1.listBillingRates));
-router.post("/billing-rates/reference-defaults", (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"), (0, asyncHandler_js_1.default)(billingRateController_js_1.seedReferenceBillingRates));
-router.post("/billing-rates", (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"), (0, asyncHandler_js_1.default)(billingRateController_js_1.createBillingRate));
-router.patch("/billing-rates/:id", (0, authMiddleware_js_1.requirePermission)("rateSetup", "edit"), (0, asyncHandler_js_1.default)(billingRateController_js_1.updateBillingRate));
-router.delete("/billing-rates/:id", (0, authMiddleware_js_1.requirePermission)("rateSetup", "delete"), (0, asyncHandler_js_1.default)(billingRateController_js_1.deleteBillingRate));
-router.get("/special-rates", (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"), (0, asyncHandler_js_1.default)(specialRateController_js_1.listSpecialRates));
-router.get("/special-rates/clients", (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"), (0, asyncHandler_js_1.default)(specialRateController_js_1.listSpecialRateClients));
-router.get("/special-rates/:id", (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"), (0, asyncHandler_js_1.default)(specialRateController_js_1.getSpecialRate));
-router.post("/special-rates", (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"), (0, asyncHandler_js_1.default)(specialRateController_js_1.createSpecialRate));
-router.patch("/special-rates/:id", (0, authMiddleware_js_1.requirePermission)("rateSetup", "edit"), (0, asyncHandler_js_1.default)(specialRateController_js_1.updateSpecialRate));
-router.delete("/special-rates/:id", (0, authMiddleware_js_1.requirePermission)("rateSetup", "delete"), (0, asyncHandler_js_1.default)(specialRateController_js_1.deleteSpecialRate));
-router.get("/payment-types", (0, authMiddleware_js_1.requirePermission)("paymentTypes", "view"), (0, asyncHandler_js_1.default)(paymentTypeController_js_1.listPaymentTypes));
-router.post("/payment-types", (0, authMiddleware_js_1.requirePermission)("paymentTypes", "create"), uploadMiddleware_js_1.paymentTypeUpload, (0, asyncHandler_js_1.default)(paymentTypeController_js_1.createPaymentType));
-router.patch("/payment-types/:id", (0, authMiddleware_js_1.requirePermission)("paymentTypes", "edit"), uploadMiddleware_js_1.paymentTypeUpload, (0, asyncHandler_js_1.default)(paymentTypeController_js_1.updatePaymentType));
-router.delete("/payment-types/:id", (0, authMiddleware_js_1.requirePermission)("paymentTypes", "delete"), (0, asyncHandler_js_1.default)(paymentTypeController_js_1.deletePaymentType));
-router.get("/pre-advices/yard/areas", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
-router.get("/pre-advices/yard/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listApprovalYardBlocks));
-router.get("/pre-advices/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));
-router.get("/pre-advices/yard/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
-router.get("/pre-advices", (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.listAdminPreAdvices));
-router.patch("/pre-advices/:id/confirm", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.confirmPreAdvice));
-router.patch("/pre-advices/:id/reject", (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.rejectPreAdvice));
-router.get("/gate-in/ready", (0, authMiddleware_js_1.requirePermission)("gateIn", "view"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.listGateInReadyPreAdvices));
-router.post("/gate-in/:preAdviceId/complete", (0, authMiddleware_js_1.requirePermission)("gateIn", "create"), (0, asyncHandler_js_1.default)(preAdviceController_js_1.completeGateIn));
-router.get("/yard/module-data", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getYardModuleData));
-router.get("/yard/summary", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
-router.get("/yard/areas", (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
-router.post("/yard/areas", (0, authMiddleware_js_1.requirePermission)("yardSetup", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardArea));
-router.patch("/yard/areas/:id", (0, authMiddleware_js_1.requirePermission)("yardSetup", "edit"), (0, asyncHandler_js_1.default)(yardController_js_1.updateYardArea));
-router.delete("/yard/areas/:id", (0, authMiddleware_js_1.requirePermission)("yardSetup", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardArea));
-router.get("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));
-router.post("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock));
-router.patch("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock));
-router.delete("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
+router.get(
+  "/audit-logs",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(auditController_js_1.listAuditLogs),
+);
+router.get(
+  "/payments/history",
+  (0, authMiddleware_js_1.requirePermission)("billing", "view"),
+  (0, asyncHandler_js_1.default)(transactionController_js_1.listPaymentHistory),
+);
+router.get(
+  "/dashboard",
+  (0, authMiddleware_js_1.requirePermission)("dashboard", "view"),
+  (0, asyncHandler_js_1.default)(reportController_js_1.getOperationsDashboard),
+);
+router.get(
+  "/users",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminController_js_1.listUsers),
+);
+router.get(
+  "/client-registrations",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "view"),
+  (0, asyncHandler_js_1.default)(adminController_js_1.listClients),
+);
+router.get(
+  "/users/:id",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminController_js_1.getUserById),
+);
+router.post(
+  "/users",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminController_js_1.createAdminUser),
+);
+router.patch(
+  "/users/:id",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminController_js_1.updateUser),
+);
+router.delete(
+  "/users/:id",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser),
+);
+router.patch(
+  "/clients/:id/approve",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"),
+  (0, asyncHandler_js_1.default)(adminController_js_1.approveClient),
+);
+router.patch(
+  "/clients/:id/reject",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"),
+  (0, asyncHandler_js_1.default)(adminController_js_1.rejectClient),
+);
+router.patch(
+  "/clients/:id",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "edit"),
+  (0, asyncHandler_js_1.default)(adminController_js_1.updateUser),
+);
+router.delete(
+  "/clients/:id",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "delete"),
+  (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser),
+);
+router.get(
+  "/reports/yard-containers",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(reportController_js_1.getYardContainerReport),
+);
+router.get(
+  "/bookings/module-data",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(
+    moduleDataController_js_1.getBookingModuleData,
+  ),
+);
+router.get(
+  "/bookings/summary",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getBookingSummary),
+);
+router.get(
+  "/bookings",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings),
+);
+router.get(
+  "/bookings/calendar",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.getAdminBookingCalendar,
+  ),
+);
+router.get(
+  "/bookings/clients",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients),
+);
+router.get(
+  "/bookings/yard/blocks/:blockId/slots",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots),
+);
+router.get(
+  "/pre-advice-bookings/module-data",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(
+    moduleDataController_js_1.getBookingModuleData,
+  ),
+);
+router.get(
+  "/pre-advice-bookings",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.listAdminBookings),
+);
+router.get(
+  "/pre-advice-bookings/yard/areas",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas),
+);
+router.get(
+  "/pre-advice-bookings/yard/blocks",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listApprovalYardBlocks),
+);
+router.get(
+  "/pre-advice-bookings/yard/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks),
+);
+router.get(
+  "/pre-advice-bookings/yard/blocks/:blockId/slots",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots),
+);
+router.get(
+  "/pre-advice-bookings/:id/congestion-surcharge",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.getBookingCongestionSurchargeOption,
+  ),
+);
+router.patch(
+  "/pre-advice-bookings/:id/approve",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking),
+);
+router.patch(
+  "/pre-advice-bookings/:id/reject",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking),
+);
+router.patch(
+  "/pre-advice-bookings/:id/cancel",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking),
+);
+router.get(
+  "/bookings/:id",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getAdminBooking),
+);
+router.patch(
+  "/bookings/:id/rate-classification",
+  (0, authMiddleware_js_1.requirePermission)("operations", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.updateBookingRateClassification,
+  ),
+);
+router.delete(
+  "/bookings/:id",
+  (0, authMiddleware_js_1.requirePermission)("operations", "delete"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.deleteBooking),
+);
+router.patch(
+  "/bookings/:id/approve",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveBooking),
+);
+router.patch(
+  "/bookings/:id/reject",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBooking),
+);
+router.patch(
+  "/bookings/:id/gate-in/details",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.updateBookingGateInDetails,
+  ),
+);
+router.patch(
+  "/bookings/:id/gate-in",
+  (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateIn),
+);
+router.patch(
+  "/bookings/:id/gate-in/reject",
+  (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateIn),
+);
+router.patch(
+  "/bookings/:id/gate-in/cancel",
+  (0, authMiddleware_js_1.requirePermission)("gateIn", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking),
+);
+router.patch(
+  "/bookings/:id/store",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.markBookingStored),
+);
+router.get(
+  "/bookings/:id/congestion-surcharge",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "view"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.getBookingCongestionSurchargeOption,
+  ),
+);
+router.post(
+  "/bookings/:id/congestion-surcharge",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.addBookingCongestionSurcharge,
+  ),
+);
+router.post(
+  "/bookings/:id/additional-charges",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.addBookingAdditionalCharge,
+  ),
+);
+router.delete(
+  "/bookings/:id/additional-charges/:chargeId",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.deleteBookingAdditionalCharge,
+  ),
+);
+router.patch(
+  "/bookings/:id/relocate",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.relocateBooking),
+);
+router.post(
+  "/bookings/:id/payment/cash",
+  (0, authMiddleware_js_1.requireAnyPermission)([
+    ["gateIn", "edit"],
+    ["gateOut", "edit"],
+  ]),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.recordAdminCashPayment),
+);
+router.patch(
+  "/bookings/:id/payment/approve",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingPayment),
+);
+router.patch(
+  "/bookings/:id/payment/reject",
+  (0, authMiddleware_js_1.requirePermission)("paymentVerification", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingPayment),
+);
+router.patch(
+  "/bookings/:id/payments/:transactionId/amount",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.updateApprovedPaymentAmount,
+  ),
+);
+router.patch(
+  "/bookings/:id/cancel",
+  (0, authMiddleware_js_1.requirePermission)("operations", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.cancelBooking),
+);
+router.patch(
+  "/bookings/:id/gate-out/approve",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveBookingGateOut),
+);
+router.patch(
+  "/bookings/:id/gate-out/reject",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectBookingGateOut),
+);
+router.patch(
+  "/bookings/:id/gate-out/dates",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.updateGateOutRequestDates,
+  ),
+);
+router.patch(
+  "/bookings/:id/gate-out/overstay-fee",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.setBookingOverstayFeePolicy,
+  ),
+);
+router.patch(
+  "/bookings/:id/gate-out/reversal/approve",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.approveGateOutReversal),
+);
+router.patch(
+  "/bookings/:id/gate-out/reversal/reject",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.rejectGateOutReversal),
+);
+router.get(
+  "/bookings/:id/gate-out/billing-preview",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.previewGateOutBilling),
+);
+router.patch(
+  "/bookings/:id/gate-out/recompute-billing",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.recomputeGateOutBilling,
+  ),
+);
+router.patch(
+  "/bookings/:id/gate-out/complete",
+  (0, authMiddleware_js_1.requirePermission)("gateOut", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut),
+);
+router.get(
+  "/billing-rates",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"),
+  (0, asyncHandler_js_1.default)(billingRateController_js_1.listBillingRates),
+);
+router.post(
+  "/billing-rates/reference-defaults",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"),
+  (0, asyncHandler_js_1.default)(
+    billingRateController_js_1.seedReferenceBillingRates,
+  ),
+);
+router.post(
+  "/billing-rates",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"),
+  (0, asyncHandler_js_1.default)(billingRateController_js_1.createBillingRate),
+);
+router.patch(
+  "/billing-rates/:id",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "edit"),
+  (0, asyncHandler_js_1.default)(billingRateController_js_1.updateBillingRate),
+);
+router.delete(
+  "/billing-rates/:id",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "delete"),
+  (0, asyncHandler_js_1.default)(billingRateController_js_1.deleteBillingRate),
+);
+router.get(
+  "/special-rates",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"),
+  (0, asyncHandler_js_1.default)(specialRateController_js_1.listSpecialRates),
+);
+router.get(
+  "/special-rates/clients",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"),
+  (0, asyncHandler_js_1.default)(
+    specialRateController_js_1.listSpecialRateClients,
+  ),
+);
+router.get(
+  "/special-rates/:id",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "view"),
+  (0, asyncHandler_js_1.default)(specialRateController_js_1.getSpecialRate),
+);
+router.post(
+  "/special-rates",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "create"),
+  (0, asyncHandler_js_1.default)(specialRateController_js_1.createSpecialRate),
+);
+router.patch(
+  "/special-rates/:id",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "edit"),
+  (0, asyncHandler_js_1.default)(specialRateController_js_1.updateSpecialRate),
+);
+router.delete(
+  "/special-rates/:id",
+  (0, authMiddleware_js_1.requirePermission)("rateSetup", "delete"),
+  (0, asyncHandler_js_1.default)(specialRateController_js_1.deleteSpecialRate),
+);
+router.get(
+  "/payment-types",
+  (0, authMiddleware_js_1.requirePermission)("paymentTypes", "view"),
+  (0, asyncHandler_js_1.default)(paymentTypeController_js_1.listPaymentTypes),
+);
+router.post(
+  "/payment-types",
+  (0, authMiddleware_js_1.requirePermission)("paymentTypes", "create"),
+  uploadMiddleware_js_1.paymentTypeUpload,
+  (0, asyncHandler_js_1.default)(paymentTypeController_js_1.createPaymentType),
+);
+router.patch(
+  "/payment-types/:id",
+  (0, authMiddleware_js_1.requirePermission)("paymentTypes", "edit"),
+  uploadMiddleware_js_1.paymentTypeUpload,
+  (0, asyncHandler_js_1.default)(paymentTypeController_js_1.updatePaymentType),
+);
+router.delete(
+  "/payment-types/:id",
+  (0, authMiddleware_js_1.requirePermission)("paymentTypes", "delete"),
+  (0, asyncHandler_js_1.default)(paymentTypeController_js_1.deletePaymentType),
+);
+router.get(
+  "/pre-advices/yard/areas",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas),
+);
+router.get(
+  "/pre-advices/yard/blocks",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listApprovalYardBlocks),
+);
+router.get(
+  "/pre-advices/yard/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks),
+);
+router.get(
+  "/pre-advices/yard/blocks/:blockId/slots",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots),
+);
+router.get(
+  "/pre-advices",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "view"),
+  (0, asyncHandler_js_1.default)(preAdviceController_js_1.listAdminPreAdvices),
+);
+router.patch(
+  "/pre-advices/:id/confirm",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"),
+  (0, asyncHandler_js_1.default)(preAdviceController_js_1.confirmPreAdvice),
+);
+router.patch(
+  "/pre-advices/:id/reject",
+  (0, authMiddleware_js_1.requirePermission)("preAdvice", "edit"),
+  (0, asyncHandler_js_1.default)(preAdviceController_js_1.rejectPreAdvice),
+);
+router.get(
+  "/gate-in/ready",
+  (0, authMiddleware_js_1.requirePermission)("gateIn", "view"),
+  (0, asyncHandler_js_1.default)(
+    preAdviceController_js_1.listGateInReadyPreAdvices,
+  ),
+);
+router.post(
+  "/gate-in/:preAdviceId/complete",
+  (0, authMiddleware_js_1.requirePermission)("gateIn", "create"),
+  (0, asyncHandler_js_1.default)(preAdviceController_js_1.completeGateIn),
+);
+router.get(
+  "/yard/module-data",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"),
+  (0, asyncHandler_js_1.default)(moduleDataController_js_1.getYardModuleData),
+);
+router.get(
+  "/yard/summary",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary),
+);
+router.get(
+  "/yard/areas",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas),
+);
+router.post(
+  "/yard/areas",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "create"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.createYardArea),
+);
+router.patch(
+  "/yard/areas/:id",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "edit"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.updateYardArea),
+);
+router.delete(
+  "/yard/areas/:id",
+  (0, authMiddleware_js_1.requirePermission)("yardSetup", "delete"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardArea),
+);
+router.get(
+  "/yard/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks),
+);
+router.post(
+  "/yard/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "create"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock),
+);
+router.patch(
+  "/yard/blocks/:id",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock),
+);
+router.delete(
+  "/yard/blocks/:id",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "delete"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock),
+);
 // Dedicated Storage Monitoring reads. Keep these ahead of generic Inventory routes.
-router.get("/storage-monitoring/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.listStorageContainers));
-router.get("/storage-monitoring/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.listStorageYardAreas));
-router.get("/storage-monitoring/areas/:areaId/slot-map", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.getStorageYardSlotMap));
-router.get("/inventory/module-data", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getInventoryModuleData));
-router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
-router.get("/inventory/stats", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.getInventoryStats));
-router.get("/inventory/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryContainers));
-router.post("/inventory/containers/legacy", authMiddleware_js_1.superAdminOnly, uploadMiddleware_js_1.legacyContainerUpload, (0, asyncHandler_js_1.default)(inventoryController_js_1.createLegacyInventoryContainer));
-router.patch("/inventory/containers/:id/assign", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(inventoryController_js_1.assignInventoryContainer));
-router.post("/inventory/containers/:id/gate-out-request", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.requestBookingGateOutByAdmin));
-router.patch("/inventory/containers/:id/gate-out/complete", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut));
-router.get("/inventory/summary", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary));
-router.get("/inventory/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas));
-router.get("/inventory/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks));
-router.get("/inventory/blocks/:blockId/slots", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots));
-router.post("/inventory/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock));
-router.patch("/inventory/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock));
-router.delete("/inventory/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
+router.get(
+  "/storage-monitoring/containers",
+  (0, asyncHandler_js_1.default)(
+    storageMonitoringController.listStorageContainers,
+  ),
+);
+router.get(
+  "/storage-monitoring/areas",
+  (0, asyncHandler_js_1.default)(
+    storageMonitoringController.listStorageYardAreas,
+  ),
+);
+router.get(
+  "/storage-monitoring/areas/:areaId/slot-map",
+  (0, asyncHandler_js_1.default)(
+    storageMonitoringController.getStorageYardSlotMap,
+  ),
+);
+router.get(
+  "/inventory/module-data",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(
+    moduleDataController_js_1.getInventoryModuleData,
+  ),
+);
+router.get(
+  "/inventory/clients",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients),
+);
+router.get(
+  "/inventory/stats",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(inventoryController_js_1.getInventoryStats),
+);
+router.get(
+  "/inventory/containers",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(
+    inventoryController_js_1.listInventoryContainers,
+  ),
+);
+router.post(
+  "/inventory/containers/legacy",
+  authMiddleware_js_1.superAdminOnly,
+  uploadMiddleware_js_1.legacyContainerUpload,
+  (0, asyncHandler_js_1.default)(
+    inventoryController_js_1.createLegacyInventoryContainer,
+  ),
+);
+router.patch(
+  "/inventory/containers/:id/assign",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(
+    inventoryController_js_1.assignInventoryContainer,
+  ),
+);
+router.post(
+  "/inventory/containers/:id/gate-out-request",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(
+    bookingController_js_1.requestBookingGateOutByAdmin,
+  ),
+);
+router.patch(
+  "/inventory/containers/:id/gate-out/complete",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.completeBookingGateOut),
+);
+router.get(
+  "/inventory/summary",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.getYardSummary),
+);
+router.get(
+  "/inventory/areas",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardAreas),
+);
+router.get(
+  "/inventory/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.listYardBlocks),
+);
+router.get(
+  "/inventory/blocks/:blockId/slots",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(bookingController_js_1.getYardBlockSlots),
+);
+router.post(
+  "/inventory/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "create"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock),
+);
+router.patch(
+  "/inventory/blocks/:id",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "edit"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock),
+);
+router.delete(
+  "/inventory/blocks/:id",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "delete"),
+  (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock),
+);
 exports.default = router;
