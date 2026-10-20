@@ -112,5 +112,6 @@ test("summary-only storage overview skips the expensive container listing comple
     assert.equal(calls.occupancy, 1);
     assert.equal(response.payload.areas[0].id, "yard-1");
     assert.equal(response.payload.storageOccupancy.totalContainers, 5);
+    assert.equal(response.payload.storageApiVersion, 5);
     assert.equal("containers" in response.payload, false);
 });

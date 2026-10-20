@@ -159,7 +159,7 @@ const listStoredContainers = async (req, res) => {
     if (bool(params.visualizationOnly)) {
         if (!params.areaId) return res.status(400).json({ success: false, message: "Choose a yard area to display its 3D layout." });
         const visual = await loadVisualization({ areaId: params.areaId, source, requestedLimit: params.visualizationLimit });
-        return res.json({ success: true, ...visual });
+        return res.json({ success: true, storageApiVersion: 5, ...visual });
     }
     const filters = await buildFilters(params);
     const [bookingTotal, legacyTotal] = await Promise.all([
@@ -183,6 +183,20 @@ const listStoredContainers = async (req, res) => {
             .populate("area", "name code").populate("block", "name code").lean() : [],
     ]);
     const containers = [...bookingRows.map(safeBooking), ...legacyRows.map(safeLegacy)];
+    // Never report a nonzero count with an empty page. This historically
+    // happened on V3 when $unionWith compared ObjectId fields to raw strings.
+    // V5 exclusively uses Mongoose find() queries, which cast IDs correctly.
+    if (pagination.total > 0 && containers.length === 0) {
+        console.error("Storage Monitoring pagination mismatch", {
+            requestedPage: params.page,
+            effectivePage: pagination.page,
+            limit: pagination.limit,
+            bookingTotal, legacyTotal,
+            bookingReturned: bookingRows.length,
+            legacyReturned: legacyRows.length,
+        });
+        return res.status(503).json({ success: false, message: "Unable to load stored containers. Please try again." });
+    }
     const output = {
         success: true,
         containers,
@@ -191,7 +205,7 @@ const listStoredContainers = async (req, res) => {
             limit: pagination.limit, perPage: pagination.limit,
             total: pagination.total, totalPages: pagination.totalPages,
         },
-        source,
+        source, storageApiVersion: 5,
     };
     // Retain V3's combined-response interface for older clients; the new admin
     // uses visualizationOnly so this extra work never runs on page navigation.

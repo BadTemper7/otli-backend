@@ -106,7 +106,7 @@ const getInventoryModuleData = async (req, res) => {
         }),
         ...(includeMeta ? (summaryOnly ? { areas } : { areas, summary, clients }) : {}),
         ...(includeBlocks ? { blocks } : {}),
-        ...(includeStorageOccupancy ? { storageOccupancy } : {}),
+        ...(includeStorageOccupancy ? { storageOccupancy, storageApiVersion: 5 } : {}),
     });
 };
 exports.getInventoryModuleData = getInventoryModuleData;

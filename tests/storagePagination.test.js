@@ -164,6 +164,7 @@ test("API page 2 at a source boundary returns records instead of a blank table",
     assert.equal(payload.containers.filter((row) => row.source === "booking").length, 2);
     assert.equal(payload.containers.filter((row) => row.source === "pre_advice").length, 8);
     assert.equal(payload.pagination.total, 43);
+    assert.equal(payload.storageApiVersion, 5);
     assert.equal(payload.pagination.page, 2);
     assert.equal(payload.pagination.totalPages, 5);
     assert.equal(harness.stats.count.length, 2);
@@ -201,6 +202,7 @@ test("visualization-only fetch skips counts and pagination, applies yard filter,
     const response = await harness.call({ view: "storage", visualizationOnly: "true", areaId: "yard-a", visualizationLimit: "15" });
     assert.equal(response.payload.visualContainers.length, 15);
     assert.equal(response.payload.visualizationTruncated, true);
+    assert.equal(response.payload.storageApiVersion, 5);
     assert.ok(response.payload.visualContainers.every((row) => row.area === "yard-a"));
     assert.equal(harness.stats.count.length, 0);
     assert.equal(harness.stats.queries.length, 2);
