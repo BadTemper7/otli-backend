@@ -1,5 +1,18 @@
 // Seed manually with: npm run seed. Do not seed during API startup.
 require("dotenv").config();
+
+// ==================== DNS CONFIG ====================
+// Force Node to use reliable public DNS resolvers (e.g. for MongoDB Atlas SRV
+// lookups on hosts like Hostinger where the default resolver is unreliable).
+const dns = require("dns");
+try {
+  dns.setServers(["1.1.1.1", "8.8.8.8"]); // Cloudflare + Google
+  console.log("🌐 DNS resolvers set:", dns.getServers().join(", "));
+} catch (err) {
+  console.warn("⚠️  Could not set custom DNS servers:", err.message);
+}
+// ==================================================
+
 const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
@@ -39,7 +52,6 @@ app.use(
 // MongoDB Connection
 const MONGODB_URI =
   process.env.MONGODB_URI || "mongodb://localhost:27017/testdb";
-
 
 // ==================== MODELS ====================
 
@@ -302,12 +314,16 @@ const startServer = async () => {
   // indexes instead: one starting with `clients`, and another starting with
   // `transactions.transactionKey`.
   try {
-    const specialRatesCollection = mongoose.connection.collection("specialrates");
+    const specialRatesCollection =
+      mongoose.connection.collection("specialrates");
     const indexes = await specialRatesCollection.indexes();
 
     for (const index of indexes) {
       const keys = index?.key || {};
-      if (keys.clients !== undefined && keys["transactions.transactionKey"] !== undefined) {
+      if (
+        keys.clients !== undefined &&
+        keys["transactions.transactionKey"] !== undefined
+      ) {
         await specialRatesCollection.dropIndex(index.name);
         console.log(`✅ Removed legacy Special Rate index: ${index.name}`);
       }
@@ -315,7 +331,10 @@ const startServer = async () => {
   } catch (indexError) {
     // NamespaceNotFound simply means the collection has not been created yet.
     // Do not prevent the API from starting for that case.
-    if (indexError?.codeName !== "NamespaceNotFound" && indexError?.code !== 26) {
+    if (
+      indexError?.codeName !== "NamespaceNotFound" &&
+      indexError?.code !== 26
+    ) {
       throw indexError;
     }
   }
