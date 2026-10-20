@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.resubmitRejectedClient = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
+exports.registerClientForApproval = exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.resubmitRejectedClient = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const User_js_1 = __importDefault(require("../models/User.js"));
@@ -25,7 +25,7 @@ const documentLabels = {
     authorizationLetter: "Authorization Letter",
     otherDocument: "Other Document",
 };
-const requiredDocumentFields = ["businessPermit", "birCertificate", "validId"];
+const requiredDocumentFields = ["businessPermit", "birCertificate"];
 const isAffirmativeConsent = (value) => ["true", "1", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 const getRequestIpAddress = (req) => {
     const forwarded = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
@@ -139,7 +139,7 @@ const login = async (req, res) => {
     if (loginType === "client" && user.userType !== "client") {
         return res.status(403).json({ success: false, message: "This login page is for client accounts only." });
     }
-    const clientLoginAllowedStatuses = ["active", "verified", "pending", "resubmitted", "rejected"];
+    const clientLoginAllowedStatuses = ["active", "verified"];
     const canLogin = user.userType === "admin" ? user.status === "active" : clientLoginAllowedStatuses.includes(user.status);
     if (!canLogin) {
         return res.status(403).json({ success: false, message: `Your account is ${user.status}.` });
@@ -161,6 +161,73 @@ const me = async (req, res) => {
     return res.json({ success: true, user: (0, exports.safeUser)(req.user) });
 };
 exports.me = me;
+// Single-stage registration: only the administrator may verify and activate an account.
+const registerClientForApproval = async (req, res) => {
+    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber,
+        representativeFirstName, representativeMiddleName, representativeLastName,
+        representativePosition, email, password, confirmPassword,
+        termsAccepted, privacyAccepted, representativeAuthorityConfirmed, ageConfirmed } = req.body;
+    const required = [companyName, companyAddress, companyType, phoneNumber,
+        representativeFirstName, representativeLastName, representativePosition, email, password, confirmPassword];
+    if (required.some((v) => !String(v || "").trim())) {
+        return res.status(400).json({ success: false, message: "Please complete all required fields." });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim())) {
+        return res.status(400).json({ success: false, message: "Enter a valid email address." });
+    }
+    if (!/^\+639\d{9}$/.test(String(phoneNumber))) {
+        return res.status(400).json({ success: false, message: "Enter a valid Philippine mobile number." });
+    }
+    if (String(password).length < 12 || password !== confirmPassword) {
+        return res.status(400).json({ success: false, message: "Passwords must match and contain at least 12 characters." });
+    }
+    if (![ageConfirmed, termsAccepted, privacyAccepted, representativeAuthorityConfirmed].every(isAffirmativeConsent)) {
+        return res.status(400).json({ success: false, message: "All required legal confirmations must be accepted." });
+    }
+    const missing = requiredDocumentFields.filter((key) => !req.files?.[key]?.[0]);
+    if (missing.length) {
+        return res.status(400).json({ success: false, message: `Missing required documents: ${missing.map(k => documentLabels[k]).join(", ")}.` });
+    }
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (await User_js_1.default.exists({ email: normalizedEmail })) {
+        return res.status(409).json({ success: false, message: "An account already exists with this email." });
+    }
+    const clientId = new mongoose_1.default.Types.ObjectId();
+    const documents = await uploadRegistrationDocuments({ files: req.files, clientId });
+    let user;
+    try {
+        user = await User_js_1.default.create({
+            _id: clientId,
+            name: `${String(representativeFirstName).trim()} ${String(representativeLastName).trim()}`,
+            email: normalizedEmail,
+            password, userType: "client", role: "client", status: "pending", isEmailVerified: false,
+            companyName: String(companyName).trim(), companyAddress: String(companyAddress).trim(),
+            companyType, companyTypeOther: companyTypeOther || "", companyMarket: "local", phoneNumber,
+            representativeFirstName, representativeMiddleName: representativeMiddleName || "",
+            representativeLastName, representativePosition, documents,
+            legalConsent: {
+                termsAccepted: true, privacyAccepted: true, representativeAuthorityConfirmed: true,
+                termsVersion: legalPolicies_js_1.TERMS_VERSION,
+                privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
+                acceptedAt: new Date(), ipAddress: getRequestIpAddress(req),
+                userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
+            },
+        });
+    } catch (error) {
+        if (error?.code === 11000) return res.status(409).json({ success: false, message: "An account already exists with this email." });
+        throw error;
+    }
+    (0, socket_js_1.emitToAdmins)("client:registered", {
+        id: user._id, name: getRepresentativeName(user), email: user.email,
+        companyName: user.companyName, status: user.status, createdAt: user.createdAt,
+    });
+    return res.status(201).json({
+        success: true,
+        message: "Registration submitted. Your account will be accessible after administrator approval.",
+        reference: String(user._id), status: "pending",
+    });
+};
+exports.registerClientForApproval = registerClientForApproval;
 const requestClientRegistrationOtp = async (req, res) => {
     const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
     const requiredFields = [
@@ -325,7 +392,7 @@ const verifyClientRegistrationOtp = async (req, res) => {
         await pending.save();
         return res.status(400).json({ success: false, message: "Invalid OTP." });
     }
-    const defaultClientStatus = process.env.CLIENT_REGISTER_DEFAULT_STATUS || "pending";
+    const defaultClientStatus = "pending";
     const user = await User_js_1.default.create({
         _id: pending.clientId || pending._id,
         name: `${pending.representativeFirstName} ${pending.representativeLastName}`.trim(),
@@ -357,14 +424,12 @@ const verifyClientRegistrationOtp = async (req, res) => {
         status: user.status,
         createdAt: user.createdAt,
     });
-    const token = (0, jwt_js_1.generateToken)(user._id);
     const isApprovedClient = ["active", "verified"].includes(user.status);
     return res.status(201).json({
         success: true,
         message: isApprovedClient
             ? "Client account registered successfully."
             : "Registration submitted successfully. You are now logged in and can track your account approval status.",
-        token,
         user: (0, exports.safeUser)(user),
     });
 };

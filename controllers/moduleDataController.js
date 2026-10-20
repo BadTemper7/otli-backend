@@ -4,7 +4,6 @@ exports.getYardModuleData = exports.getInventoryModuleData = exports.getBookingM
 const bookingController = require("./bookingController.js");
 const inventoryController = require("./inventoryController.js");
 const yardController = require("./yardController.js");
-const { loadStorageOccupancy } = require("../utils/storageOccupancy.js");
 
 const captureController = (handler, req) => new Promise((resolve, reject) => {
     let statusCode = 200;
@@ -42,20 +41,15 @@ exports.getBookingModuleData = getBookingModuleData;
 const getInventoryModuleData = async (req, res) => {
     const includeMeta = String(req.query.includeMeta || "false").toLowerCase() === "true";
     const includeBlocks = Boolean(req.query.areaId);
-    const includeStorageOccupancy = String(req.query.view || "").toLowerCase() === "storage"
-        && String(req.query.includeStorageOccupancy || "false").toLowerCase() === "true";
     const tableReq = {
         ...req,
         query: {
             ...req.query,
-            // Storage Monitoring has a dedicated occupancy summary; do not
-            // trigger the unrelated Inventory dashboard stats aggregation.
-            includeStats: includeMeta && String(req.query.view || "").toLowerCase() !== "storage"
-                ? "true" : String(req.query.includeStats || "false"),
+            includeStats: includeMeta ? "true" : String(req.query.includeStats || "false"),
         },
     };
     const tablePromise = captureController(inventoryController.listInventoryContainers, tableReq);
-    if (!includeMeta && !includeBlocks && !includeStorageOccupancy) {
+    if (!includeMeta && !includeBlocks) {
         const table = await tablePromise;
         return res.json({ success: true, ...table });
     }
@@ -69,7 +63,6 @@ const getInventoryModuleData = async (req, res) => {
     if (includeBlocks) {
         tasks.push(captureController(yardController.listYardBlocks, { ...req, params: { ...(req.params || {}), areaId: req.query.areaId } }));
     }
-    if (includeStorageOccupancy) tasks.push(loadStorageOccupancy());
     const results = await Promise.all(tasks);
     const table = results[0] || {};
     let index = 1;
@@ -83,19 +76,16 @@ const getInventoryModuleData = async (req, res) => {
         clients = results[index++]?.clients || [];
     }
     if (includeBlocks) blocks = results[index++]?.blocks || [];
-    const storageOccupancy = includeStorageOccupancy ? results[index++] : null;
 
     return res.json({
         success: true,
         containers: table.containers || [],
         visualContainers: table.visualContainers || [],
-        visualizationTruncated: Boolean(table.visualizationTruncated),
         pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
         stats: table.stats,
         truncated: Boolean(table.truncated),
         ...(includeMeta ? { areas, summary, clients } : {}),
         ...(includeBlocks ? { blocks } : {}),
-        ...(includeStorageOccupancy ? { storageOccupancy } : {}),
     });
 };
 exports.getInventoryModuleData = getInventoryModuleData;

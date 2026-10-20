@@ -37,7 +37,7 @@ const initSocket = (httpServer, allowedOrigins = []) => {
             const canUseSocket = user
                 ? user.userType === "admin"
                     ? user.status === "active"
-                    : ["active", "verified", "pending", "resubmitted", "rejected"].includes(user.status)
+                    : ["active", "verified"].includes(user.status)
                 : false;
             if (!canUseSocket) {
                 return next(new Error("Socket user is not authorized."));

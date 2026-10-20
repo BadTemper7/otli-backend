@@ -15,26 +15,42 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+const allowedOrigins = String(process.env.CORS_ORIGINS || "")
+  .split(",").map(x => x.trim()).filter(Boolean);
+if (process.env.NODE_ENV === "production" && !allowedOrigins.length) {
+  throw new Error("CORS_ORIGINS must be configured in production.");
+}
+app.use(cors({ origin: allowedOrigins.length ? allowedOrigins : true }));
+app.disable("x-powered-by");
+app.use(require("helmet")());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Local document storage. Client folders are created automatically on upload.
-// Storage is initialized again during server bootstrap before accepting requests.
-app.use(
-  "/documents",
-  express.static(DOCUMENTS_ROOT, {
-    dotfiles: "deny",
-    index: false,
-    fallthrough: true,
-    maxAge: 0,
-    setHeaders: (res) => {
-      res.setHeader("Cache-Control", "private, no-store, max-age=0");
-      res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-    },
-  }),
-);
+// Documents must never be served anonymously. Access is restricted to the
+// owning client or an active administrator. Authentication is via Bearer token.
+const fs = require("fs");
+const { protect } = require("./middleware/authMiddleware.js");
+const { resolveStoredFilePath } = require("./utils/localFileStorage.js");
+app.get("/documents/:owner/:file", protect, async (req, res) => {
+  const owner = String(req.params.owner);
+  const isAdmin = req.user.userType === "admin" && req.user.status === "active";
+  if (!isAdmin && (req.user.userType !== "client" || String(req.user._id) !== owner)) {
+    return res.status(403).json({ success: false, message: "Document access denied." });
+  }
+  const filePath = resolveStoredFilePath(`${owner}/${req.params.file}`);
+  if (!filePath) return res.sendStatus(404);
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) return res.sendStatus(404);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", "attachment");
+    return res.sendFile(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return res.sendStatus(404);
+    return res.sendStatus(500);
+  }
+});
 
 // MongoDB Connection
 const MONGODB_URI =
@@ -95,140 +111,9 @@ app.get("/health", async (req, res) => {
   });
 });
 
-// ===== User Routes =====
-
-// Create a new user
-app.post("/api/users", async (req, res) => {
-  try {
-    const { name, email, age } = req.body;
-
-    // Validation
-    if (!name || !email) {
-      return res.status(400).json({
-        error: "Name and email are required",
-      });
-    }
-
-    const user = new User({ name, email, age });
-    await user.save();
-
-    res.status(201).json({
-      success: true,
-      message: "User created successfully",
-      user,
-    });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({
-        error: "Email already exists",
-      });
-    }
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Get all users
-app.get("/api/users", async (req, res) => {
-  try {
-    const users = await User.find().sort({ createdAt: -1 });
-    res.json({
-      success: true,
-      count: users.length,
-      users,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Get a single user by ID
-app.get("/api/users/:id", async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-    res.json({
-      success: true,
-      user,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Update a user
-app.put("/api/users/:id", async (req, res) => {
-  try {
-    const { name, email, age } = req.body;
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { name, email, age },
-      { new: true, runValidators: true },
-    );
-
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "User updated successfully",
-      user,
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// Delete a user
-app.delete("/api/users/:id", async (req, res) => {
-  try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) {
-      return res.status(404).json({
-        error: "User not found",
-      });
-    }
-    res.json({
-      success: true,
-      message: "User deleted successfully",
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-    });
-  }
-});
-
-// ===== Test Route =====
-app.get("/api/test", (req, res) => {
-  res.json({
-    message: "API is working!",
-    endpoints: [
-      { method: "GET", path: "/" },
-      { method: "GET", path: "/health" },
-      { method: "GET", path: "/api/users" },
-      { method: "POST", path: "/api/users" },
-      { method: "GET", path: "/api/users/:id" },
-      { method: "PUT", path: "/api/users/:id" },
-      { method: "DELETE", path: "/api/users/:id" },
-      { method: "GET", path: "/api/test" },
-    ],
-  });
-});
+// Legacy unauthenticated sample-user CRUD routes removed: they exposed
+// personal records and allowed anonymous modification/deletion.
+app.get("/api/test", (req, res) => res.json({ status: "OK" }));
 
 // ==================== ONETRUE BACKEND ====================
 // OneTrue folders are kept directly in the project root.
@@ -266,7 +151,7 @@ app.use((err, req, res, next) => {
   console.error("Error:", err.stack);
   res.status(500).json({
     error: "Something went wrong!",
-    message: err.message,
+    message: process.env.NODE_ENV === "production" ? "Request failed." : err.message,
   });
 });
 
@@ -286,10 +171,7 @@ const startServer = async () => {
   const storagePath = await ensureDocumentsRoot();
   console.log(`📁 Document storage ready: ${storagePath}`);
 
-  await mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  });
+  await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 10000 });
   console.log("✅ Connected to MongoDB successfully!");
 
   // MongoDB cannot maintain a compound multikey index that includes two
@@ -308,8 +190,7 @@ const startServer = async () => {
     for (const index of indexes) {
       const keys = index?.key || {};
       if (keys.clients !== undefined && keys["transactions.transactionKey"] !== undefined) {
-        await specialRatesCollection.dropIndex(index.name);
-        console.log(`✅ Removed legacy Special Rate index: ${index.name}`);
+        console.warn(`Legacy Special Rate index requires reviewed manual migration: ${index.name}`);
       }
     }
   } catch (indexError) {

@@ -152,6 +152,7 @@ const approveClient = async (req, res) => {
         return res.status(404).json({ success: false, message: "Client not found." });
     }
     user.status = "verified";
+    user.isEmailVerified = true; // Legacy field: account is verified by administrator, not email OTP.
     user.verifiedAt = new Date();
     user.rejectionReason = "";
     user.rejectedAt = null;

@@ -299,41 +299,6 @@ const safeContainer = (container) => {
         updatedAt: doc.updatedAt,
     };
 };
-// Keep the 3D allocation payload small. Full booking and inventory details are
-// still returned for the paginated table and its detail modal.
-const safeVisualBookingContainer = (doc) => ({
-    id: String(doc._id),
-    area: doc.assignedArea ? String(doc.assignedArea) : "",
-    block: doc.assignedBlock ? String(doc.assignedBlock) : "",
-    bay: Number(doc.assignedBay) || 1,
-    row: Number(doc.assignedRow) || 1,
-    tier: Number(doc.assignedTier) || 1,
-    containerNumber: doc.containerNumber,
-    containerSize: doc.containerSize,
-    containerLoadStatus: doc.containerLoadStatus,
-    rateType: doc.rateType,
-    clientName: doc.client?.companyName || doc.client?.name || "",
-    storageStartDate: doc.storageStartDate,
-    storedAt: doc.storedAt,
-    updatedAt: doc.updatedAt,
-});
-const safeVisualLegacyContainer = (doc) => ({
-    id: String(doc._id),
-    area: doc.area ? String(doc.area) : "",
-    block: doc.block ? String(doc.block) : "",
-    bay: Number(doc.bay) || 1,
-    row: Number(doc.row) || 1,
-    tier: Number(doc.tier) || 1,
-    containerNumber: doc.containerNumber,
-    containerSize: doc.containerSize,
-    containerLoadStatus: doc.containerStatus,
-    rateType: doc.rateType,
-    clientName: doc.client?.companyName || doc.client?.name || doc.customerName || "",
-    storageStartDate: doc.storageStartDate,
-    storedAt: doc.storageStartDate,
-    updatedAt: doc.updatedAt,
-});
-
 const listInventoryClients = async (req, res) => {
     const clients = await User_js_1.default.find({
         userType: "client",
@@ -703,13 +668,9 @@ const listInventoryContainers = async (req, res) => {
     const bookingQuery = { status: { $in: isStorageView ? INVENTORY_STORAGE_BOOKING_STATUSES : INVENTORY_BOOKING_STATUSES } };
     const normalizedSource = ["all", "booking", "legacy"].includes(String(source)) ? String(source) : "all";
     const normalizedLoadStatus = String(loadStatus || "").toLowerCase() === "loaded" ? "laden" : String(loadStatus || "").toLowerCase();
-    // Storage Monitoring shows every container without page/limit controls.
-    // Only the storage view opts into unlimited results; regular Inventory
-    // keeps its existing server-side pagination and 100-row page limit.
-    const unpaginated = isStorageView && String(req.query.unpaginated || "false").toLowerCase() === "true";
-    const page = unpaginated ? 1 : Math.max(Number(req.query.page) || 1, 1);
-    const limit = unpaginated ? 0 : Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
-    const skip = unpaginated ? 0 : (page - 1) * limit;
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
+    const skip = (page - 1) * limit;
 
     if (clientId && clientId !== "all") {
         query.client = clientId;
@@ -791,8 +752,8 @@ const listInventoryContainers = async (req, res) => {
                 } },
             ] } },
             { $sort: { priority: 1, sortDate: -1, _id: -1 } },
-            // A storage overview deliberately has no result limit.
-            ...(unpaginated ? [] : [{ $skip: skip }, { $limit: limit }]),
+            { $skip: skip },
+            { $limit: limit },
         ];
         pageRefs = await InventoryContainer_js_1.default.aggregate(pipeline);
     }
@@ -813,37 +774,34 @@ const listInventoryContainers = async (req, res) => {
     const result = pageRefs.map((item) => mapped.get(`${item.source}:${String(item._id)}`)).filter(Boolean);
 
     let visualContainers;
-    let visualizationTruncated = false;
     const includeVisualization = String(req.query.includeVisualization || "false").toLowerCase() === "true" && Boolean(areaId);
     if (includeVisualization) {
-        // The 3D yard view represents ALL physically stored containers in the
-        // selected area. Table-only filters (search, block, classification) must
-        // not remove containers from the map or make a slot look empty.
-        const visualLegacyQuery = {
-            area: areaId,
-            status: { $in: INVENTORY_STORAGE_LEGACY_STATUSES },
-        };
-        const visualBookingQuery = {
-            assignedArea: areaId,
-            status: { $in: INVENTORY_STORAGE_BOOKING_STATUSES },
-        };
+        // Storage Monitoring needs the complete lightweight yard allocation for the
+        // selected area so its block list and 3D slot map are not limited to the
+        // current table page. Keep the table paginated, but return visualization
+        // records in the same HTTP response. The selected block is intentionally
+        // ignored here so switching the block only changes the focused map while
+        // the full area allocation remains available.
+        const visualLegacyQuery = { ...query };
+        const visualBookingQuery = { ...bookingQuery };
+        delete visualLegacyQuery.block;
+        delete visualBookingQuery.assignedBlock;
         const visualizationLimit = Math.min(Math.max(Number(req.query.visualizationLimit) || 2000, 100), 5000);
         const [visualLegacy, visualBookings] = await Promise.all([
             includeLegacy ? InventoryContainer_js_1.default.find(visualLegacyQuery)
-                .select("area block bay row tier containerNumber containerSize containerStatus rateType client customerName storageStartDate updatedAt")
                 .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
-                .limit(visualizationLimit + 1)
-                .populate("client", "name companyName").lean() : [],
-            includeBookings ? Booking_js_1.default.find(visualBookingQuery)
-                .select("assignedArea assignedBlock assignedBay assignedRow assignedTier containerNumber containerSize containerLoadStatus rateType client storageStartDate storedAt updatedAt gateInApprovedAt")
+                .limit(visualizationLimit)
+                .populate("client", "name email companyName").populate("area", "name code").populate("block", "name code")
+                .populate("preAdvice", "preAdviceNumber status").populate("gateIn", "gateInNumber status completedAt").lean() : [],
+            includeBookings ? Booking_js_1.default.find(visualBookingQuery).select(INVENTORY_BOOKING_SELECT)
                 .sort({ gateInApprovedAt: -1, updatedAt: -1, _id: -1 })
-                .limit(visualizationLimit + 1)
-                .populate("client", "name companyName").lean() : [],
+                .limit(visualizationLimit)
+                .populate("client", "name email companyName").populate("assignedArea", "name code").populate("assignedBlock", "name code")
+                .populate("legacyRegisteredBy", "name").lean() : [],
         ]);
-        visualizationTruncated = visualLegacy.length > visualizationLimit || visualBookings.length > visualizationLimit;
         visualContainers = [
-            ...visualBookings.slice(0, visualizationLimit).map(safeVisualBookingContainer),
-            ...visualLegacy.slice(0, visualizationLimit).map(safeVisualLegacyContainer),
+            ...visualBookings.map((item) => safeBookingContainer(item)),
+            ...visualLegacy.map((item) => ({ ...safeContainer(item), source: "pre_advice" })),
         ];
     }
 
@@ -852,15 +810,13 @@ const listInventoryContainers = async (req, res) => {
         try { statsPayload = await loadInventoryStats(); }
         catch (error) { console.warn("Inventory list returned without stats:", error.message); }
     }
-    const totalPages = unpaginated ? 1 : Math.max(Math.ceil(total / limit), 1);
+    const totalPages = Math.max(Math.ceil(total / limit), 1);
     return res.json({
         success: true,
-        unpaginated,
         containers: result,
         visualContainers,
-        visualizationTruncated,
         stats: statsPayload,
-        pagination: { page, currentPage: page, limit: unpaginated ? total : limit, perPage: unpaginated ? total : limit, total, totalPages },
+        pagination: { page, currentPage: page, limit, perPage: limit, total, totalPages },
         source: normalizedSource,
     });
 };

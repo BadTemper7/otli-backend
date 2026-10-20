@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.compareOtp = exports.hashOtp = exports.generateOtp = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
-const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000));
+const generateOtp = () => String(require("node:crypto").randomInt(100000, 1000000));
 exports.generateOtp = generateOtp;
 const hashOtp = async (otp) => {
     const salt = await bcryptjs_1.default.genSalt(10);
