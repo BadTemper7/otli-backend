@@ -703,13 +703,11 @@ const listInventoryContainers = async (req, res) => {
     const bookingQuery = { status: { $in: isStorageView ? INVENTORY_STORAGE_BOOKING_STATUSES : INVENTORY_BOOKING_STATUSES } };
     const normalizedSource = ["all", "booking", "legacy"].includes(String(source)) ? String(source) : "all";
     const normalizedLoadStatus = String(loadStatus || "").toLowerCase() === "loaded" ? "laden" : String(loadStatus || "").toLowerCase();
-    // Storage Monitoring shows every container without page/limit controls.
-    // Only the storage view opts into unlimited results; regular Inventory
-    // keeps its existing server-side pagination and 100-row page limit.
-    const unpaginated = isStorageView && String(req.query.unpaginated || "false").toLowerCase() === "true";
-    const page = unpaginated ? 1 : Math.max(Number(req.query.page) || 1, 1);
-    const limit = unpaginated ? 0 : Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
-    const skip = unpaginated ? 0 : (page - 1) * limit;
+    // Storage records always use server-side pagination, just like Inventory.
+    // Yard occupancy and selected-area 3D data use independent data requests.
+    const page = Math.max(Math.floor(Number(req.query.page) || 1), 1);
+    const limit = Math.min(Math.max(Math.floor(Number(req.query.limit || req.query.pageSize) || 10), 1), 100);
+    const skip = (page - 1) * limit;
 
     if (clientId && clientId !== "all") {
         query.client = clientId;
@@ -791,8 +789,8 @@ const listInventoryContainers = async (req, res) => {
                 } },
             ] } },
             { $sort: { priority: 1, sortDate: -1, _id: -1 } },
-            // A storage overview deliberately has no result limit.
-            ...(unpaginated ? [] : [{ $skip: skip }, { $limit: limit }]),
+            { $skip: skip },
+            { $limit: limit },
         ];
         pageRefs = await InventoryContainer_js_1.default.aggregate(pipeline);
     }
@@ -852,15 +850,14 @@ const listInventoryContainers = async (req, res) => {
         try { statsPayload = await loadInventoryStats(); }
         catch (error) { console.warn("Inventory list returned without stats:", error.message); }
     }
-    const totalPages = unpaginated ? 1 : Math.max(Math.ceil(total / limit), 1);
+    const totalPages = Math.max(Math.ceil(total / limit), 1);
     return res.json({
         success: true,
-        unpaginated,
         containers: result,
         visualContainers,
         visualizationTruncated,
         stats: statsPayload,
-        pagination: { page, currentPage: page, limit: unpaginated ? total : limit, perPage: unpaginated ? total : limit, total, totalPages },
+        pagination: { page, currentPage: page, limit, perPage: limit, total, totalPages },
         source: normalizedSource,
     });
 };

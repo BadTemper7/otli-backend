@@ -7,7 +7,7 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 function mockModuleData({ occupancy }) {
-    const calls = { inventory: [], blocks: [], occupancy: 0 };
+    const calls = { inventory: [], blocks: [], occupancy: 0, clients: 0, yardSummary: 0 };
     const storageOccupancy = occupancy || {
         areas: [{ areaId: "yard-1", containerCount: 5, usedTeu: 7 }],
         blocks: [{ areaId: "yard-1", blockId: "block-1", containerCount: 5, usedTeu: 7 }],
@@ -25,11 +25,11 @@ function mockModuleData({ occupancy }) {
                     pagination: { page: 1, total: 5, totalPages: 1 },
                 });
             },
-            listInventoryClients: async (req, res) => res.json({ clients: [] }),
+            listInventoryClients: async (req, res) => { calls.clients++; return res.json({ clients: [] }); },
         },
         "./yardController.js": {
             listYardAreas: async (req, res) => res.json({ areas: [{ id: "yard-1", name: "Area One" }] }),
-            getYardSummary: async (req, res) => res.json({ summary: {} }),
+            getYardSummary: async (req, res) => { calls.yardSummary++; return res.json({ summary: {} }); },
             listYardBlocks: async (req, res) => {
                 calls.blocks.push(req.params.areaId);
                 res.json({ blocks: [{ id: "block-1", area: req.params.areaId }] });
@@ -97,4 +97,20 @@ test("ordinary inventory queries do not trigger extra storage occupancy aggregat
     } }, response);
     assert.equal(calls.occupancy, 0);
     assert.ok(!("storageOccupancy" in response.payload));
+});
+
+test("summary-only storage overview skips the expensive container listing completely", async () => {
+    const { moduleData, calls } = mockModuleData({});
+    const response = makeResponse();
+    await moduleData.getInventoryModuleData({ query: {
+        view: "storage", summaryOnly: "true", includeMeta: "true", includeStorageOccupancy: "true", page: "1", limit: "1",
+    } }, response);
+    assert.equal(calls.inventory.length, 0);
+    assert.equal(calls.blocks.length, 0);
+    assert.equal(calls.clients, 0);
+    assert.equal(calls.yardSummary, 0);
+    assert.equal(calls.occupancy, 1);
+    assert.equal(response.payload.areas[0].id, "yard-1");
+    assert.equal(response.payload.storageOccupancy.totalContainers, 5);
+    assert.equal("containers" in response.payload, false);
 });
