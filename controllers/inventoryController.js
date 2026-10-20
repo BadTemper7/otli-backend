@@ -697,6 +697,12 @@ const getInventoryStats = async (req, res) => {
 };
 exports.getInventoryStats = getInventoryStats;
 const listInventoryContainers = async (req, res) => {
+    // Storage Monitoring has its own bounded, indexed pagination path. Do not
+    // run the general Inventory $unionWith pipeline or load inventory stats.
+    if (String(req.query?.view || "").toLowerCase() === "storage") {
+        return require("./storageController.js").listStoredContainers(req, res);
+    }
+
     const { areaId, blockId, status, clientId, search, loadStatus, rateType, recordSource, source = "all", view = "inventory" } = req.query;
     const isStorageView = String(view).toLowerCase() === "storage";
     const query = { status: { $in: isStorageView ? INVENTORY_STORAGE_LEGACY_STATUSES : INVENTORY_LEGACY_STATUSES } };
