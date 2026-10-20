@@ -15,7 +15,6 @@ router.patch("/change-password", authMiddleware_js_1.protect, (0, asyncHandler_j
 router.post("/forgot-password", (0, asyncHandler_js_1.default)(authController_js_1.forgotPassword));
 router.post("/reset-password", (0, asyncHandler_js_1.default)(authController_js_1.resetPassword));
 router.post("/email/test", (0, asyncHandler_js_1.default)(authController_js_1.sendTestEmail));
-router.post("/client/register", uploadMiddleware_js_1.clientRegistrationUpload, (0, asyncHandler_js_1.default)(authController_js_1.registerClientForApproval));
 router.post("/client/register/request-otp", uploadMiddleware_js_1.clientRegistrationUpload, (0, asyncHandler_js_1.default)(authController_js_1.requestClientRegistrationOtp));
 router.post("/client/register/resend-otp", (0, asyncHandler_js_1.default)(authController_js_1.resendClientRegistrationOtp));
 router.post("/client/register/verify-otp", (0, asyncHandler_js_1.default)(authController_js_1.verifyClientRegistrationOtp));

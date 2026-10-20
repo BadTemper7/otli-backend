@@ -299,6 +299,41 @@ const safeContainer = (container) => {
         updatedAt: doc.updatedAt,
     };
 };
+// Keep the 3D allocation payload small. Full booking and inventory details are
+// still returned for the paginated table and its detail modal.
+const safeVisualBookingContainer = (doc) => ({
+    id: String(doc._id),
+    area: doc.assignedArea ? String(doc.assignedArea) : "",
+    block: doc.assignedBlock ? String(doc.assignedBlock) : "",
+    bay: Number(doc.assignedBay) || 1,
+    row: Number(doc.assignedRow) || 1,
+    tier: Number(doc.assignedTier) || 1,
+    containerNumber: doc.containerNumber,
+    containerSize: doc.containerSize,
+    containerLoadStatus: doc.containerLoadStatus,
+    rateType: doc.rateType,
+    clientName: doc.client?.companyName || doc.client?.name || "",
+    storageStartDate: doc.storageStartDate,
+    storedAt: doc.storedAt,
+    updatedAt: doc.updatedAt,
+});
+const safeVisualLegacyContainer = (doc) => ({
+    id: String(doc._id),
+    area: doc.area ? String(doc.area) : "",
+    block: doc.block ? String(doc.block) : "",
+    bay: Number(doc.bay) || 1,
+    row: Number(doc.row) || 1,
+    tier: Number(doc.tier) || 1,
+    containerNumber: doc.containerNumber,
+    containerSize: doc.containerSize,
+    containerLoadStatus: doc.containerStatus,
+    rateType: doc.rateType,
+    clientName: doc.client?.companyName || doc.client?.name || doc.customerName || "",
+    storageStartDate: doc.storageStartDate,
+    storedAt: doc.storageStartDate,
+    updatedAt: doc.updatedAt,
+});
+
 const listInventoryClients = async (req, res) => {
     const clients = await User_js_1.default.find({
         userType: "client",
@@ -662,14 +697,22 @@ const getInventoryStats = async (req, res) => {
 };
 exports.getInventoryStats = getInventoryStats;
 const listInventoryContainers = async (req, res) => {
+    // Storage Monitoring has its own bounded, indexed pagination path. Do not
+    // run the general Inventory $unionWith pipeline or load inventory stats.
+    if (String(req.query?.view || "").toLowerCase() === "storage") {
+        return require("./storageController.js").listStoredContainers(req, res);
+    }
+
     const { areaId, blockId, status, clientId, search, loadStatus, rateType, recordSource, source = "all", view = "inventory" } = req.query;
     const isStorageView = String(view).toLowerCase() === "storage";
     const query = { status: { $in: isStorageView ? INVENTORY_STORAGE_LEGACY_STATUSES : INVENTORY_LEGACY_STATUSES } };
     const bookingQuery = { status: { $in: isStorageView ? INVENTORY_STORAGE_BOOKING_STATUSES : INVENTORY_BOOKING_STATUSES } };
     const normalizedSource = ["all", "booking", "legacy"].includes(String(source)) ? String(source) : "all";
     const normalizedLoadStatus = String(loadStatus || "").toLowerCase() === "loaded" ? "laden" : String(loadStatus || "").toLowerCase();
-    const page = Math.max(Number(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
+    // Storage records always use server-side pagination, just like Inventory.
+    // Yard occupancy and selected-area 3D data use independent data requests.
+    const page = Math.max(Math.floor(Number(req.query.page) || 1), 1);
+    const limit = Math.min(Math.max(Math.floor(Number(req.query.limit || req.query.pageSize) || 10), 1), 100);
     const skip = (page - 1) * limit;
 
     if (clientId && clientId !== "all") {
@@ -774,34 +817,37 @@ const listInventoryContainers = async (req, res) => {
     const result = pageRefs.map((item) => mapped.get(`${item.source}:${String(item._id)}`)).filter(Boolean);
 
     let visualContainers;
+    let visualizationTruncated = false;
     const includeVisualization = String(req.query.includeVisualization || "false").toLowerCase() === "true" && Boolean(areaId);
     if (includeVisualization) {
-        // Storage Monitoring needs the complete lightweight yard allocation for the
-        // selected area so its block list and 3D slot map are not limited to the
-        // current table page. Keep the table paginated, but return visualization
-        // records in the same HTTP response. The selected block is intentionally
-        // ignored here so switching the block only changes the focused map while
-        // the full area allocation remains available.
-        const visualLegacyQuery = { ...query };
-        const visualBookingQuery = { ...bookingQuery };
-        delete visualLegacyQuery.block;
-        delete visualBookingQuery.assignedBlock;
+        // The 3D yard view represents ALL physically stored containers in the
+        // selected area. Table-only filters (search, block, classification) must
+        // not remove containers from the map or make a slot look empty.
+        const visualLegacyQuery = {
+            area: areaId,
+            status: { $in: INVENTORY_STORAGE_LEGACY_STATUSES },
+        };
+        const visualBookingQuery = {
+            assignedArea: areaId,
+            status: { $in: INVENTORY_STORAGE_BOOKING_STATUSES },
+        };
         const visualizationLimit = Math.min(Math.max(Number(req.query.visualizationLimit) || 2000, 100), 5000);
         const [visualLegacy, visualBookings] = await Promise.all([
             includeLegacy ? InventoryContainer_js_1.default.find(visualLegacyQuery)
+                .select("area block bay row tier containerNumber containerSize containerStatus rateType client customerName storageStartDate updatedAt")
                 .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
-                .limit(visualizationLimit)
-                .populate("client", "name email companyName").populate("area", "name code").populate("block", "name code")
-                .populate("preAdvice", "preAdviceNumber status").populate("gateIn", "gateInNumber status completedAt").lean() : [],
-            includeBookings ? Booking_js_1.default.find(visualBookingQuery).select(INVENTORY_BOOKING_SELECT)
+                .limit(visualizationLimit + 1)
+                .populate("client", "name companyName").lean() : [],
+            includeBookings ? Booking_js_1.default.find(visualBookingQuery)
+                .select("assignedArea assignedBlock assignedBay assignedRow assignedTier containerNumber containerSize containerLoadStatus rateType client storageStartDate storedAt updatedAt gateInApprovedAt")
                 .sort({ gateInApprovedAt: -1, updatedAt: -1, _id: -1 })
-                .limit(visualizationLimit)
-                .populate("client", "name email companyName").populate("assignedArea", "name code").populate("assignedBlock", "name code")
-                .populate("legacyRegisteredBy", "name").lean() : [],
+                .limit(visualizationLimit + 1)
+                .populate("client", "name companyName").lean() : [],
         ]);
+        visualizationTruncated = visualLegacy.length > visualizationLimit || visualBookings.length > visualizationLimit;
         visualContainers = [
-            ...visualBookings.map((item) => safeBookingContainer(item)),
-            ...visualLegacy.map((item) => ({ ...safeContainer(item), source: "pre_advice" })),
+            ...visualBookings.slice(0, visualizationLimit).map(safeVisualBookingContainer),
+            ...visualLegacy.slice(0, visualizationLimit).map(safeVisualLegacyContainer),
         ];
     }
 
@@ -815,6 +861,7 @@ const listInventoryContainers = async (req, res) => {
         success: true,
         containers: result,
         visualContainers,
+        visualizationTruncated,
         stats: statsPayload,
         pagination: { page, currentPage: page, limit, perPage: limit, total, totalPages },
         source: normalizedSource,

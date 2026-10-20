@@ -1741,22 +1741,7 @@ const resubmitClientBooking = async (req, res) => {
     return res.json({ success: true, message: "Booking resubmitted. Please wait for admin approval.", booking: payload });
 };
 exports.resubmitClientBooking = resubmitClientBooking;
-const clientBookingSummary = require("../utils/clientBookingSummary.js");
 const listClientBookings = async (req, res) => {
-    // Opt-in response: never change the legacy full-list contract for other consumers.
-    if (req.query.view === "summary") {
-        const bookings = await Booking_js_1.default.find({ client: req.user._id })
-            .select(clientBookingSummary.CLIENT_BOOKING_SUMMARY_SELECT)
-            .populate("assignedArea", "name")
-            .sort({ createdAt: -1 })
-            .limit(300)
-            .lean();
-        return res.json({
-            success: true,
-            bookings: bookings.map((booking) =>
-                clientBookingSummary.toClientBookingSummary(safeBooking(booking))),
-        });
-    }
     const bookings = await populateBooking(Booking_js_1.default.find({ client: req.user._id })).sort({ createdAt: -1 }).limit(300).lean();
     return res.json({ success: true, bookings: bookings.map(safeBooking) });
 };
@@ -2743,10 +2728,10 @@ const submitBookingPayment = async (req, res) => {
         bookingReference: booking.bookingReference,
         clientId: req.user._id,
     });
-    if (paymentProofs.length === 0 && !clientPaymentReference) {
+    if (paymentProofs.length === 0) {
         return res.status(400).json({
             success: false,
-            message: "Enter a payment reference number or upload proof of payment.",
+            message: "Proof of payment is required for all online payments.",
         });
     }
     if (Number(booking.approvedPaymentAmount || 0) > 0 || (booking.paymentTransactions || []).length > 0 || booking.billingStatus === "payment_rejected") {

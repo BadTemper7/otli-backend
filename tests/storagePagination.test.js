@@ -164,7 +164,7 @@ test("API page 2 at a source boundary returns records instead of a blank table",
     assert.equal(payload.containers.filter((row) => row.source === "booking").length, 2);
     assert.equal(payload.containers.filter((row) => row.source === "pre_advice").length, 8);
     assert.equal(payload.pagination.total, 43);
-    assert.equal(payload.storageApiVersion, 5);
+    assert.equal(payload.storageApiVersion, 6);
     assert.equal(payload.pagination.page, 2);
     assert.equal(payload.pagination.totalPages, 5);
     assert.equal(harness.stats.count.length, 2);
@@ -202,7 +202,7 @@ test("visualization-only fetch skips counts and pagination, applies yard filter,
     const response = await harness.call({ view: "storage", visualizationOnly: "true", areaId: "yard-a", visualizationLimit: "15" });
     assert.equal(response.payload.visualContainers.length, 15);
     assert.equal(response.payload.visualizationTruncated, true);
-    assert.equal(response.payload.storageApiVersion, 5);
+    assert.equal(response.payload.storageApiVersion, 6);
     assert.ok(response.payload.visualContainers.every((row) => row.area === "yard-a"));
     assert.equal(harness.stats.count.length, 0);
     assert.equal(harness.stats.queries.length, 2);
@@ -229,4 +229,20 @@ test("regular inventory dispatch is unchanged, while storage is routed to specia
     const inventory = fs.readFileSync(path.join(__dirname, "../controllers/inventoryController.js"), "utf8");
     assert.match(inventory, /return require\("\.\/storageController\.js"\)\.listStoredContainers\(req, res\)/);
     assert.match(inventory, /const listInventoryContainers = async/);
+});
+
+test("trusted selected-yard visualization loads beyond the legacy 5000-record cap", async () => {
+    const harness = createHarness({
+        bookings: Array.from({ length: 5100 }, (_, i) => ({
+            ...booking(i), assignedArea: { _id: "yard-a", name: "Yard A" },
+        })),
+        legacyRows: Array.from({ length: 175 }, (_, i) => legacy(i)),
+    });
+    const result = await harness.handler.loadVisualization({
+        areaId: "yard-a", source: "all", full: true,
+    });
+    assert.equal(result.visualContainers.length, 5275);
+    assert.equal(result.visualizationTruncated, false);
+    assert.ok(harness.stats.queries.every((query) => query.limit === Infinity));
+    assert.equal(harness.stats.count.length, 0, "full 3D must not run table counts");
 });

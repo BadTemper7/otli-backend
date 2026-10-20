@@ -7,7 +7,7 @@ exports.requireAnyPermission = exports.requirePermission = exports.superAdminOnl
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 const permissions_js_1 = require("../utils/permissions.js");
-exports.CLIENT_LOGIN_ALLOWED_STATUSES = ["active", "verified"];
+exports.CLIENT_LOGIN_ALLOWED_STATUSES = ["active", "verified", "pending", "resubmitted", "rejected"];
 exports.CLIENT_VERIFIED_STATUSES = ["active", "verified"];
 const canUseToken = (user) => {
     if (user.userType === "admin")

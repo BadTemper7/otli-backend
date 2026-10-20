@@ -20,6 +20,7 @@ const auditMiddleware_js_1 = require("../middleware/auditMiddleware.js");
 const auditController_js_1 = require("../controllers/auditController.js");
 const transactionController_js_1 = require("../controllers/transactionController.js");
 const moduleDataController_js_1 = require("../controllers/moduleDataController.js");
+const storageMonitoringController = require("../controllers/storageMonitoringController.js");
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.adminOnly);
 router.use(auditMiddleware_js_1.auditAdminMutations);
@@ -116,6 +117,10 @@ router.get("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermissi
 router.post("/yard/areas/:areaId/blocks", (0, authMiddleware_js_1.requirePermission)("inventory", "create"), (0, asyncHandler_js_1.default)(yardController_js_1.createYardBlock));
 router.patch("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "edit"), (0, asyncHandler_js_1.default)(yardController_js_1.updateYardBlock));
 router.delete("/yard/blocks/:id", (0, authMiddleware_js_1.requirePermission)("inventory", "delete"), (0, asyncHandler_js_1.default)(yardController_js_1.deleteYardBlock));
+// Dedicated Storage Monitoring reads. Keep these ahead of generic Inventory routes.
+router.get("/storage-monitoring/containers", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.listStorageContainers));
+router.get("/storage-monitoring/areas", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.listStorageYardAreas));
+router.get("/storage-monitoring/areas/:areaId/slot-map", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(storageMonitoringController.getStorageYardSlotMap));
 router.get("/inventory/module-data", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(moduleDataController_js_1.getInventoryModuleData));
 router.get("/inventory/clients", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.listInventoryClients));
 router.get("/inventory/stats", (0, authMiddleware_js_1.requirePermission)("inventory", "view"), (0, asyncHandler_js_1.default)(inventoryController_js_1.getInventoryStats));

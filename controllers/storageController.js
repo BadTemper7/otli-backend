@@ -92,17 +92,27 @@ const safeVisualLegacy = (row) => ({
     storageStartDate: row.storageStartDate, storedAt: row.storageStartDate, updatedAt: row.updatedAt,
 });
 
-const loadVisualization = async ({ areaId, source, requestedLimit }) => {
-    const limit = Math.min(Math.max(Math.floor(Number(requestedLimit)) || 5000, 1), 5000);
+const loadVisualization = async ({ areaId, source, requestedLimit, full = false }) => {
+    // Only the trusted selected-area route uses full=true. Legacy callers
+    // remain bounded, so external flags cannot request an unlimited dump.
+    const limit = full ? null : Math.min(Math.max(Math.floor(Number(requestedLimit)) || 5000, 1), 5000);
+    const bookingQuery = Booking.find({ assignedArea: areaId, status: { $in: STORED_BOOKING_STATUSES } })
+        .select(VIS_BOOKING_FIELDS).populate("client", "name companyName");
+    const legacyQuery = InventoryContainer.find({ area: areaId, status: { $in: STORED_LEGACY_STATUSES } })
+        .select(VIS_LEGACY_FIELDS).populate("client", "name companyName");
+    if (limit !== null) {
+        bookingQuery.limit(limit + 1);
+        legacyQuery.limit(limit + 1);
+    }
     const [bookings, legacy] = await Promise.all([
-        source === "legacy" ? [] : Booking.find({ assignedArea: areaId, status: { $in: STORED_BOOKING_STATUSES } })
-            .select(VIS_BOOKING_FIELDS).limit(limit + 1).populate("client", "name companyName").lean(),
-        source === "booking" ? [] : InventoryContainer.find({ area: areaId, status: { $in: STORED_LEGACY_STATUSES } })
-            .select(VIS_LEGACY_FIELDS).limit(limit + 1).populate("client", "name companyName").lean(),
+        source === "legacy" ? [] : bookingQuery.lean(),
+        source === "booking" ? [] : legacyQuery.lean(),
     ]);
-    // Never send twice the advertised 3D limit when both collections are populated.
-    const combined = [ ...bookings.map(safeVisualBooking), ...legacy.map(safeVisualLegacy) ];
-    return { visualContainers: combined.slice(0, limit), visualizationTruncated: combined.length > limit };
+    const combined = [...bookings.map(safeVisualBooking), ...legacy.map(safeVisualLegacy)];
+    return {
+        visualContainers: limit === null ? combined : combined.slice(0, limit),
+        visualizationTruncated: limit !== null && combined.length > limit,
+    };
 };
 
 const buildFilters = async (params) => {
@@ -159,7 +169,7 @@ const listStoredContainers = async (req, res) => {
     if (bool(params.visualizationOnly)) {
         if (!params.areaId) return res.status(400).json({ success: false, message: "Choose a yard area to display its 3D layout." });
         const visual = await loadVisualization({ areaId: params.areaId, source, requestedLimit: params.visualizationLimit });
-        return res.json({ success: true, storageApiVersion: 5, ...visual });
+        return res.json({ success: true, storageApiVersion: 6, ...visual });
     }
     const filters = await buildFilters(params);
     const [bookingTotal, legacyTotal] = await Promise.all([
@@ -205,7 +215,7 @@ const listStoredContainers = async (req, res) => {
             limit: pagination.limit, perPage: pagination.limit,
             total: pagination.total, totalPages: pagination.totalPages,
         },
-        source, storageApiVersion: 5,
+        source, storageApiVersion: 6,
     };
     // Retain V3's combined-response interface for older clients; the new admin
     // uses visualizationOnly so this extra work never runs on page navigation.

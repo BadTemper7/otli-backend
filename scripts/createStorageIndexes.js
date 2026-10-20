@@ -19,6 +19,9 @@ if (!url) {
             Booking.collection.createIndex({ assignedArea: 1, assignedBlock: 1, status: 1, updatedAt: -1, _id: -1 }),
             InventoryContainer.collection.createIndex({ area: 1, status: 1, createdAt: -1, _id: -1 }),
             InventoryContainer.collection.createIndex({ area: 1, block: 1, status: 1, createdAt: -1, _id: -1 }),
+            // Cover the status-only occupancy scans for all yard areas.
+            Booking.collection.createIndex({ status: 1, assignedArea: 1, assignedBlock: 1, containerSize: 1 }),
+            InventoryContainer.collection.createIndex({ status: 1, area: 1, block: 1, containerSize: 1 }),
         ]);
         console.log("Storage paging indexes are ready. No application data was modified.");
     })().catch((error) => {
