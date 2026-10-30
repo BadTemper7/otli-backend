@@ -17,7 +17,6 @@ const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const { getAllowedOrigins, createCorsOptions } = require("./config/cors.js");
 const path = require("path");
 const {
   ensureDocumentsRoot,
@@ -29,10 +28,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-// Allow only the configured client/admin frontends and support credentials.
-// This also handles all browser OPTIONS preflight requests before the routes.
-const allowedClientOrigins = getAllowedOrigins();
-app.use(cors(createCorsOptions(allowedClientOrigins)));
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -279,18 +275,6 @@ app.use((req, res) => {
 
 // Error Handler
 app.use((err, req, res, next) => {
-  // Registration SMTP quota and temporary failures should be retriable by
-  // clients without exposing SMTP credentials or producing 500 responses.
-  if (err?.code === "REGISTRATION_EMAIL_RATE_LIMIT" ||
-      err?.code === "REGISTRATION_EMAIL_UNAVAILABLE") {
-    if (err.retryAfterSeconds) {
-      res.setHeader("Retry-After", String(err.retryAfterSeconds));
-    }
-    return res.status(err.statusCode || 503).json({
-      success: false,
-      message: err.message,
-    });
-  }
   console.error("Error:", err.stack);
   res.status(500).json({
     error: "Something went wrong!",
@@ -301,13 +285,12 @@ app.use((err, req, res, next) => {
 // Start HTTP and Socket.IO server
 const { initSocket } = require("./socket/socket.js");
 const httpServer = http.createServer(app);
-// Keep Socket.IO on the same allowlist unless a legacy socket-specific
-// origin setting is explicitly provided.
-const socketAllowedOrigins = getAllowedOrigins(
-  process.env.SOCKET_ALLOWED_ORIGINS ||
-    process.env.CORS_ORIGINS ||
-    process.env.CLIENT_ORIGINS,
-);
+const socketAllowedOrigins = String(
+  process.env.SOCKET_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "",
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 initSocket(httpServer, socketAllowedOrigins);
 
