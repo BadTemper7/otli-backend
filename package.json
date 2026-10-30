@@ -12,7 +12,8 @@
     "dev": "nodemon server.js",
     "seed": "node seed/seedSuperAdmin.js",
     "backfill:release-reports": "node seed/backfillReleaseReports.js",
-    "test:email": "node --test tests/registrationEmailLimiter.test.js tests/registrationEmailOnly.test.js"
+    "test:email": "node --test tests/registrationEmailLimiter.test.js tests/registrationEmailOnly.test.js",
+    "test:cors": "node --test tests/cors.test.js"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",

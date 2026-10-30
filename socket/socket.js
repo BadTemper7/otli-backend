@@ -7,16 +7,25 @@ exports.emitToUser = exports.emitToAdmins = exports.getIO = exports.initSocket =
 const socket_io_1 = require("socket.io");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_js_1 = __importDefault(require("../models/User.js"));
+const { getAllowedOrigins, isAllowedOrigin } = require("../config/cors.js");
 let ioInstance = null;
-const initSocket = (httpServer, allowedOrigins = []) => {
+const initSocket = (httpServer, allowedOrigins = getAllowedOrigins()) => {
+    const origins = allowedOrigins;
     const io = new socket_io_1.Server(httpServer, {
         path: "/socket.io",
         serveClient: false,
         transports: ["websocket", "polling"],
         allowUpgrades: true,
         cors: {
-            origin: allowedOrigins.length ? allowedOrigins : true,
+            origin: origins,
             credentials: true,
+            methods: ["GET", "POST"],
+        },
+        // WebSocket handshakes are not protected by browser CORS checks.
+        // Check their Origin header as well; token auth remains unchanged.
+        allowRequest: (req, callback) => {
+            const origin = req.headers.origin;
+            callback(null, !origin || isAllowedOrigin(origin, origins));
         },
     });
     // Socket handshakes and transport responses must never be cached by a
