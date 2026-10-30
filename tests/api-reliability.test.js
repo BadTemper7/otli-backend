@@ -91,8 +91,8 @@ test("disconnected clients are logged without request bodies", () => {
 
 test("database pool and selection timeouts are bounded in the server source", () => {
   const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-  assert.match(server, /serverSelectionTimeoutMS:\s*12000/);
-  assert.match(server, /waitQueueTimeoutMS:\s*8000/);
+  assert.match(server, /serverSelectionTimeoutMS:\s*10000/);
+  assert.match(server, /waitQueueTimeoutMS:\s*5000/);
   assert.match(server, /createDatabaseAvailability/);
   assert.match(server, /createApiDiagnostics/);
   assert.match(server, /createApiErrorHandler/);

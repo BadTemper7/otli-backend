@@ -41,6 +41,8 @@ exports.getBookingModuleData = getBookingModuleData;
 
 const getInventoryModuleData = async (req, res) => {
     const includeMeta = String(req.query.includeMeta || "false").toLowerCase() === "true";
+    const summaryOnly = String(req.query.view || "").toLowerCase() === "storage"
+        && String(req.query.summaryOnly || "false").toLowerCase() === "true";
     const includeBlocks = Boolean(req.query.areaId);
     const includeStorageOccupancy = String(req.query.view || "").toLowerCase() === "storage"
         && String(req.query.includeStorageOccupancy || "false").toLowerCase() === "true";
@@ -54,8 +56,9 @@ const getInventoryModuleData = async (req, res) => {
                 ? "true" : String(req.query.includeStats || "false"),
         },
     };
-    const tablePromise = captureController(inventoryController.listInventoryContainers, tableReq);
-    if (!includeMeta && !includeBlocks && !includeStorageOccupancy) {
+    // A storage overview needs no container rows, counting/pagination or 3D payload.
+    const tablePromise = summaryOnly ? Promise.resolve({}) : captureController(inventoryController.listInventoryContainers, tableReq);
+    if (!includeMeta && !includeBlocks && !includeStorageOccupancy && !summaryOnly) {
         const table = await tablePromise;
         return res.json({ success: true, ...table });
     }
@@ -63,8 +66,12 @@ const getInventoryModuleData = async (req, res) => {
     const tasks = [tablePromise];
     if (includeMeta) {
         tasks.push(captureController(yardController.listYardAreas, req));
-        tasks.push(captureController(yardController.getYardSummary, req));
-        tasks.push(captureController(inventoryController.listInventoryClients, req));
+        // Storage Monitoring only needs area metadata and physical occupancy.
+        // Avoid unrelated Inventory summary and client queries in this view.
+        if (!summaryOnly) {
+            tasks.push(captureController(yardController.getYardSummary, req));
+            tasks.push(captureController(inventoryController.listInventoryClients, req));
+        }
     }
     if (includeBlocks) {
         tasks.push(captureController(yardController.listYardBlocks, { ...req, params: { ...(req.params || {}), areaId: req.query.areaId } }));
@@ -79,23 +86,27 @@ const getInventoryModuleData = async (req, res) => {
     let blocks = null;
     if (includeMeta) {
         areas = results[index++]?.areas || [];
-        summary = results[index++]?.summary || null;
-        clients = results[index++]?.clients || [];
+        if (!summaryOnly) {
+            summary = results[index++]?.summary || null;
+            clients = results[index++]?.clients || [];
+        }
     }
     if (includeBlocks) blocks = results[index++]?.blocks || [];
     const storageOccupancy = includeStorageOccupancy ? results[index++] : null;
 
     return res.json({
         success: true,
-        containers: table.containers || [],
-        visualContainers: table.visualContainers || [],
-        visualizationTruncated: Boolean(table.visualizationTruncated),
-        pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
-        stats: table.stats,
-        truncated: Boolean(table.truncated),
-        ...(includeMeta ? { areas, summary, clients } : {}),
+        ...(summaryOnly ? {} : {
+            containers: table.containers || [],
+            visualContainers: table.visualContainers || [],
+            visualizationTruncated: Boolean(table.visualizationTruncated),
+            pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
+            stats: table.stats,
+            truncated: Boolean(table.truncated),
+        }),
+        ...(includeMeta ? (summaryOnly ? { areas } : { areas, summary, clients }) : {}),
         ...(includeBlocks ? { blocks } : {}),
-        ...(includeStorageOccupancy ? { storageOccupancy } : {}),
+        ...(includeStorageOccupancy ? { storageOccupancy, storageApiVersion: 5 } : {}),
     });
 };
 exports.getInventoryModuleData = getInventoryModuleData;

@@ -1,9 +1,19 @@
 // Seed manually with: npm run seed. Do not seed during API startup.
 require("dotenv").config();
+
+// Respect the host OS DNS resolvers. Forcing public DNS servers globally can
+// break Atlas SRV lookups on networks that block external DNS traffic.
+// If DNS resolution fails, confirm Hostinger/Atlas networking in runtime logs.
+
+
 const express = require("express");
 const http = require("http");
 const mongoose = require("mongoose");
+// Fail fast when MongoDB disconnects rather than buffering requests until
+// browser timeouts. The database-availability middleware returns HTTP 503.
+mongoose.set("bufferCommands", false);
 const cors = require("cors");
+const { createCorsPolicy } = require("./config/cors.js");
 const path = require("path");
 const {
   ensureDocumentsRoot,
@@ -13,11 +23,20 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const { createApiDiagnostics } = require("./middleware/apiDiagnostics.js");
+const { createDatabaseAvailability } = require("./middleware/databaseAvailability.js");
+const { createApiErrorHandler } = require("./middleware/apiErrorResponse.js");
 
-// Middleware
-app.use(cors());
+// Apply one CORS policy to HTTP requests and Socket.IO. In local
+// development any origin is allowed; other modes use an exact allowlist.
+const corsPolicy = createCorsPolicy();
+app.use(cors(corsPolicy.corsOptions));
+app.use(createApiDiagnostics({ getDatabaseState: () => mongoose.connection.readyState }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// All database-dependent endpoints return a quick 503 if Atlas disconnects.
+// /api/test remains accessible to distinguish backend availability from DB health.
+app.use("/api", createDatabaseAvailability(() => mongoose.connection.readyState));
 
 // Local document storage. Client folders are created automatically on upload.
 // Storage is initialized again during server bootstrap before accepting requests.
@@ -39,7 +58,6 @@ app.use(
 // MongoDB Connection
 const MONGODB_URI =
   process.env.MONGODB_URI || "mongodb://localhost:27017/testdb";
-
 
 // ==================== MODELS ====================
 
@@ -92,6 +110,19 @@ app.get("/health", async (req, res) => {
     mongodb: databaseConnected ? "connected" : "disconnected",
     documentStorage,
     uptime: process.uptime(),
+  });
+});
+
+// Optional, read-only diagnostic: distinguishes a healthy MongoDB connection
+// from one which is stuck waiting for a database server. 3s maximum reply.
+const { probeDatabase } = require("./utils/databaseHealth.js");
+app.get("/health/database", async (_req, res) => {
+  const result = await probeDatabase(mongoose.connection);
+  res.setHeader("Cache-Control", "no-store");
+  res.status(result.healthy ? 200 : 503).json({
+    status: result.healthy ? "healthy" : "degraded",
+    mongodb: result.mongodb,
+    latencyMs: result.latencyMs,
   });
 });
 
@@ -261,75 +292,82 @@ app.use((req, res) => {
   });
 });
 
-// Error Handler
-app.use((err, req, res, next) => {
-  console.error("Error:", err.stack);
-  res.status(500).json({
-    error: "Something went wrong!",
-    message: err.message,
-  });
-});
+// Error Handler: distinguish transient MongoDB failures from application errors.
+// Never return raw connection strings, credentials or internal stack traces.
+app.use(createApiErrorHandler());
+
+// Avoid noisy and potentially sensitive raw driver error output.
+mongoose.connection.on("disconnected", () => console.warn("[database] MongoDB connection lost"));
+mongoose.connection.on("reconnected", () => console.info("[database] MongoDB connection restored"));
+mongoose.connection.on("error", (error) =>
+  console.error(`[database] connection error type=${String(error?.name || "Error").slice(0, 80)}`),
+);
 
 // Start HTTP and Socket.IO server
 const { initSocket } = require("./socket/socket.js");
 const httpServer = http.createServer(app);
-const socketAllowedOrigins = String(
-  process.env.SOCKET_ALLOWED_ORIGINS || process.env.CORS_ORIGINS || "",
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+initSocket(httpServer, corsPolicy.corsOptions);
 
-initSocket(httpServer, socketAllowedOrigins);
+const { createDatabaseConnector } = require("./utils/runtimeStartup.js");
 
-const startServer = async () => {
-  const storagePath = await ensureDocumentsRoot();
-  console.log(`📁 Document storage ready: ${storagePath}`);
-
-  await mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  });
-  console.log("✅ Connected to MongoDB successfully!");
-
-  // MongoDB cannot maintain a compound multikey index that includes two
-  // array fields. Older deployments created an index containing both
-  // `clients` and `transactions.transactionKey`, which causes inserts such as
-  // a Special Rate with multiple clients/transactions to fail with:
-  // "cannot index parallel arrays [clients] [transactions]".
-  //
-  // Remove only that legacy invalid index. The schema now keeps two safe
-  // indexes instead: one starting with `clients`, and another starting with
-  // `transactions.transactionKey`.
+const repairLegacySpecialRatesIndex = async () => {
   try {
-    const specialRatesCollection = mongoose.connection.collection("specialrates");
-    const indexes = await specialRatesCollection.indexes();
-
+    const collection = mongoose.connection.collection("specialrates");
+    const indexes = await collection.indexes();
     for (const index of indexes) {
       const keys = index?.key || {};
-      if (keys.clients !== undefined && keys["transactions.transactionKey"] !== undefined) {
-        await specialRatesCollection.dropIndex(index.name);
-        console.log(`✅ Removed legacy Special Rate index: ${index.name}`);
+      if (
+        keys.clients !== undefined &&
+        keys["transactions.transactionKey"] !== undefined
+      ) {
+        await collection.dropIndex(index.name);
+        console.info(`[database] Removed legacy Special Rate index: ${index.name}`);
       }
     }
-  } catch (indexError) {
-    // NamespaceNotFound simply means the collection has not been created yet.
-    // Do not prevent the API from starting for that case.
-    if (indexError?.codeName !== "NamespaceNotFound" && indexError?.code !== 26) {
-      throw indexError;
+  } catch (error) {
+    if (error?.codeName !== "NamespaceNotFound" && error?.code !== 26) {
+      // Index cleanup is maintenance, not a reason for the whole API to crash.
+      console.warn(`[database] Legacy index check skipped type=${error?.name || "Error"}`);
     }
   }
+};
 
+const dbConnector = createDatabaseConnector({
+  connect: () => mongoose.connect(MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+    waitQueueTimeoutMS: 5000,
+    maxPoolSize: 15,
+    maxIdleTimeMS: 60000,
+  }),
+  afterConnect: repairLegacySpecialRatesIndex,
+});
+
+// Listen immediately so Hostinger can route health checks to this process.
+// MongoDB-dependent endpoints return an explicit 503 until Atlas is ready.
+// A transient Atlas connection failure no longer terminates Express.
+const startServer = () => {
   httpServer.listen(PORT, () => {
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
-    console.log(`🔗 Test the API: http://localhost:${PORT}/api/test`);
-    console.log("🔌 Socket.IO is enabled");
+    console.info(`[startup] HTTP listening port=${PORT} env=${process.env.NODE_ENV || "development"}`);
+    console.info(`[startup] API probe: http://localhost:${PORT}/api/test`);
+    if (!process.env.JWT_SECRET) {
+      console.error("[startup] JWT_SECRET is not configured; authentication cannot work.");
+    }
+    void ensureDocumentsRoot()
+      .then(() => console.info("[storage] Documents directory ready"))
+      .catch((error) => console.warn(`[storage] Documents unavailable type=${error?.name || "Error"}`));
+
+    if (process.env.NODE_ENV === "production" && !process.env.MONGODB_URI) {
+      console.error("[startup] MONGODB_URI is missing. Database routes are unavailable.");
+    } else {
+      dbConnector.start();
+    }
   });
 };
 
-startServer().catch((error) => {
-  console.error("❌ Server startup failed:", error.message);
-  if (error?.stack) console.error(error.stack);
-  process.exit(1);
+httpServer.on("error", (error) => {
+  console.error(`[startup] HTTP server error type=${error?.code || error?.name || "Error"}`);
+  process.exitCode = 1;
 });
+
+startServer();

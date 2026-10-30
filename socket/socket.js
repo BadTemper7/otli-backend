@@ -9,15 +9,17 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const User_js_1 = __importDefault(require("../models/User.js"));
 let ioInstance = null;
 const initSocket = (httpServer, allowedOrigins = []) => {
+    // Backward compatible with callers passing an origin array, while the
+    // Express server now supplies its shared credential-aware CORS options.
+    const corsOptions = Array.isArray(allowedOrigins)
+        ? { origin: allowedOrigins.length ? allowedOrigins : true, credentials: true }
+        : allowedOrigins;
     const io = new socket_io_1.Server(httpServer, {
         path: "/socket.io",
         serveClient: false,
         transports: ["websocket", "polling"],
         allowUpgrades: true,
-        cors: {
-            origin: allowedOrigins.length ? allowedOrigins : true,
-            credentials: true,
-        },
+        cors: corsOptions,
     });
     // Socket handshakes and transport responses must never be cached by a
     // browser service worker, CDN, or reverse proxy.

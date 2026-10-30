@@ -17,15 +17,25 @@ const canUseToken = (user) => {
     return false;
 };
 const protect = async (req, res, next) => {
+    const authorization = String(req.headers.authorization || "");
+    const token = authorization.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length).trim()
+        : "";
+    if (!token) {
+        return res.status(401).json({ success: false, message: "Not authorized. No token provided." });
+    }
+
+    // Invalid JWTs are authentication errors. Database failures are NOT:
+    // reporting an Atlas outage as HTTP 401 incorrectly logs out clients.
+    let decoded;
     try {
-        let token = null;
-        if (req.headers.authorization?.startsWith("Bearer ")) {
-            token = req.headers.authorization.split(" ")[1];
-        }
-        if (!token) {
-            return res.status(401).json({ success: false, message: "Not authorized. No token provided." });
-        }
-        const decoded = jsonwebtoken_1.default.verify(token, process.env.JWT_SECRET);
+        decoded = jsonwebtoken_1.default.verify(token, process.env.JWT_SECRET);
+    }
+    catch (_error) {
+        return res.status(401).json({ success: false, message: "Not authorized. Invalid token." });
+    }
+
+    try {
         const user = await User_js_1.default.findById(decoded.id);
         if (!user) {
             return res.status(401).json({ success: false, message: "User not found." });
@@ -34,10 +44,11 @@ const protect = async (req, res, next) => {
             return res.status(403).json({ success: false, message: `Account is ${user.status}.` });
         }
         req.user = user;
-        next();
+        return next();
     }
     catch (error) {
-        return res.status(401).json({ success: false, message: "Not authorized. Invalid token." });
+        // Preserve error type for the database error handler (HTTP 503).
+        return next(error);
     }
 };
 exports.protect = protect;
