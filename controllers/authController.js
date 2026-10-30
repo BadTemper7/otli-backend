@@ -11,6 +11,7 @@ const AuditLog_js_1 = __importDefault(require("../models/AuditLog.js"));
 const PendingClient_js_1 = __importDefault(require("../models/PendingClient.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
+const registrationEmailLimit_js_1 = require("../utils/registrationEmailLimit.js");
 const generateOtp_js_1 = require("../utils/generateOtp.js");
 const jwt_js_1 = require("../utils/jwt.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
@@ -97,19 +98,21 @@ const safeUser = (user) => {
     };
 };
 exports.safeUser = safeUser;
+const { timeRegistrationStage } = require("../utils/registrationTiming.js");
+
 const uploadRegistrationDocuments = async ({ files, clientId }) => {
-    const uploadedDocs = [];
-    for (const fieldName of Object.keys(documentLabels)) {
-        const file = files?.[fieldName]?.[0];
-        if (!file)
-            continue;
+    // A registration can include five documents. Writing them concurrently
+    // avoids serial filesystem delays during the OTP request.
+    const fields = Object.keys(documentLabels).filter((fieldName) => files?.[fieldName]?.[0]);
+    const results = await Promise.allSettled(fields.map(async (fieldName) => {
+        const file = files[fieldName][0];
         const result = await (0, localFileStorage_js_1.saveUploadedFile)({
             file,
             clientId,
             category: "registration",
             prefix: fieldName,
         });
-        uploadedDocs.push({
+        return {
             type: fieldName,
             label: documentLabels[fieldName],
             fileName: file.originalname,
@@ -120,9 +123,18 @@ const uploadRegistrationDocuments = async ({ files, clientId }) => {
             mimeType: file.mimetype,
             sizeBytes: file.size,
             uploadedAt: new Date(),
-        });
+        };
+    }));
+
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) {
+        // Do not leave partial documents behind when one write fails.
+        await Promise.all(results.filter((result) => result.status === "fulfilled")
+            .map((result) => (0, localFileStorage_js_1.deleteLocalFile)(result.value.publicId)
+                .catch(() => undefined)));
+        throw failed.reason;
     }
-    return uploadedDocs;
+    return results.map((result) => result.value);
 };
 const login = async (req, res) => {
     const { email, password, loginType } = req.body;
@@ -161,6 +173,39 @@ const me = async (req, res) => {
     return res.json({ success: true, user: (0, exports.safeUser)(req.user) });
 };
 exports.me = me;
+// A stalled SMTP connection must not leave the registration page waiting for
+// the provider indefinitely. We never retry an uncertain SMTP send automatically
+// (it might have been accepted before the connection failed).
+const handleRegistrationEmailFailure = (error, res) => {
+    const code = String(error?.code || "SMTP_ERROR");
+    const safeCode = /^(E[A-Z_]{1,30}|SMTP_ERROR)$/.test(code) ? code : "SMTP_ERROR";
+    console.warn(`[registration] OTP SMTP send not confirmed code=${safeCode}`);
+    const retryAfterSeconds = Math.max(1, Number(process.env.EMAIL_OTP_RESEND_SECONDS || 60));
+    res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(503).json({
+        success: false,
+        code: "REGISTRATION_OTP_DELIVERY_UNCONFIRMED",
+        message: "OTP delivery could not be confirmed. Check your inbox (including spam). If no code arrives, please wait and use Resend OTP.",
+        retryAfterSeconds,
+    });
+};
+
+// Reserve a shared sending slot BEFORE saving/updating a registration OTP.
+// When the SMTP account is at its limit, an existing valid OTP is not replaced.
+const allowRegistrationOtpEmail = async (res) => {
+    try {
+        await (0, registrationEmailLimit_js_1.reserveRegistrationEmailSlot)();
+        return true;
+    }
+    catch (error) {
+        if (error?.code !== "REGISTRATION_EMAIL_LIMIT") throw error;
+        res.status(429).json({
+            success: false,
+            message: "Registration email sending is temporarily limited. Please try again later.",
+        });
+        return false;
+    }
+};
 const requestClientRegistrationOtp = async (req, res) => {
     const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
     const requiredFields = [
@@ -194,27 +239,31 @@ const requestClientRegistrationOtp = async (req, res) => {
             message: `Missing required documents: ${missingDocuments.map((field) => documentLabels[field]).join(", ")}.`,
         });
     }
+    if (typeof email !== "string" || !/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email.trim())) {
+        return res.status(400).json({ success: false, message: "Please provide a valid email address." });
+    }
     const normalizedEmail = email.toLowerCase().trim();
-    const existingUser = await User_js_1.default.findOne({ email: normalizedEmail });
+    const existingUser = await timeRegistrationStage(req, "userLookupMs", () => User_js_1.default.findOne({ email: normalizedEmail }));
     if (existingUser) {
         return res.status(409).json({ success: false, message: "Email is already registered." });
     }
-    const existingPending = await PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash");
+    const existingPending = await timeRegistrationStage(req, "pendingLookupMs", () => PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash"));
     if (existingPending && !canResendOtp(existingPending.otpLastSentAt)) {
         return res.status(429).json({
             success: false,
             message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
         });
     }
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
     const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
-    const uploadedDocs = await uploadRegistrationDocuments({
+    const uploadedDocs = await timeRegistrationStage(req, "saveFilesMs", () => uploadRegistrationDocuments({
         files: req.files,
         clientId: reservedClientId,
-    });
+    }));
     const otp = (0, generateOtp_js_1.generateOtp)();
     const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    const passwordHash = await bcryptjs_1.default.hash(password, 10);
-    await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+    const passwordHash = await timeRegistrationStage(req, "hashPasswordMs", () => bcryptjs_1.default.hash(password, 10));
+    await timeRegistrationStage(req, "savePendingMs", () => PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
         clientId: reservedClientId,
         companyName,
         companyAddress,
@@ -243,16 +292,19 @@ const requestClientRegistrationOtp = async (req, res) => {
         otpExpiresAt: getOtpExpiryDate(),
         otpAttempts: 0,
         otpLastSentAt: new Date(),
-    }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    await (0, mailer_js_1.sendEmail)({
-        to: normalizedEmail,
-        subject: "OTLI Client Registration OTP",
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Client Registration",
-            otp,
-            message: "Use this OTP to verify your email and submit your client registration.",
-        }),
-    });
+    }, { upsert: true, new: true, setDefaultsOnInsert: true }));
+    try {
+        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
+            to: normalizedEmail,
+            html: (0, emailTemplates_js_1.otpEmailTemplate)({
+                title: "OTLI Client Registration",
+                otp,
+                message: "Use this OTP to verify your email and submit your client registration.",
+            }),
+        }));
+    } catch (error) {
+        return handleRegistrationEmailFailure(error, res);
+    }
     return res.json({ success: true, message: "OTP has been sent to your email." });
 };
 exports.requestClientRegistrationOtp = requestClientRegistrationOtp;
@@ -260,6 +312,9 @@ const resendClientRegistrationOtp = async (req, res) => {
     const { email } = req.body;
     if (!email) {
         return res.status(400).json({ success: false, message: "Email is required." });
+    }
+    if (typeof email !== "string" || !/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email.trim())) {
+        return res.status(400).json({ success: false, message: "Please provide a valid email address." });
     }
     const normalizedEmail = email.toLowerCase().trim();
     const pending = await PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash");
@@ -278,21 +333,25 @@ const resendClientRegistrationOtp = async (req, res) => {
             message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
         });
     }
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
     const otp = (0, generateOtp_js_1.generateOtp)();
     pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
     pending.otpExpiresAt = getOtpExpiryDate();
     pending.otpAttempts = 0;
     pending.otpLastSentAt = new Date();
-    await pending.save();
-    await (0, mailer_js_1.sendEmail)({
-        to: normalizedEmail,
-        subject: "OTLI Client Registration OTP",
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Client Registration",
-            otp,
-            message: "Use this new OTP to verify your email and submit your client registration.",
-        }),
-    });
+    await timeRegistrationStage(req, "savePendingMs", () => pending.save());
+    try {
+        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
+            to: normalizedEmail,
+            html: (0, emailTemplates_js_1.otpEmailTemplate)({
+                title: "OTLI Client Registration",
+                otp,
+                message: "Use this new OTP to verify your email and submit your client registration.",
+            }),
+        }));
+    } catch (error) {
+        return handleRegistrationEmailFailure(error, res);
+    }
     return res.json({ success: true, message: "A new OTP has been sent to your email." });
 };
 exports.resendClientRegistrationOtp = resendClientRegistrationOtp;
@@ -369,71 +428,20 @@ const verifyClientRegistrationOtp = async (req, res) => {
     });
 };
 exports.verifyClientRegistrationOtp = verifyClientRegistrationOtp;
-const forgotPassword = async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ success: false, message: "Email is required." });
-    }
-    const user = await User_js_1.default.findOne({ email: email.toLowerCase().trim() }).select("+passwordResetOtpHash");
-    if (!user) {
-        return res.json({ success: true, message: "If the email exists, an OTP will be sent." });
-    }
-    if (!canResendOtp(user.passwordResetLastSentAt)) {
-        return res.status(429).json({
-            success: false,
-            message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
-        });
-    }
-    const otp = (0, generateOtp_js_1.generateOtp)();
-    user.passwordResetOtpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    user.passwordResetExpiresAt = getOtpExpiryDate();
-    user.passwordResetAttempts = 0;
-    user.passwordResetLastSentAt = new Date();
-    await user.save();
-    await (0, mailer_js_1.sendEmail)({
-        to: user.email,
-        subject: "OTLI Password Reset OTP",
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Password Reset",
-            otp,
-            message: "Use this OTP to reset your OTLI account password.",
-        }),
+// Account recovery by email is disabled to protect the single SMTP account.
+// Signed-in users can still change their passwords using /change-password.
+const forgotPassword = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Email password reset is unavailable. Please contact an administrator for account recovery.",
     });
-    return res.json({ success: true, message: "If the email exists, an OTP will be sent." });
 };
 exports.forgotPassword = forgotPassword;
-const resetPassword = async (req, res) => {
-    const { email, otp, password, confirmPassword } = req.body;
-    if (!email || !otp || !password || !confirmPassword) {
-        return res.status(400).json({ success: false, message: "Email, OTP, password, and confirm password are required." });
-    }
-    if (password !== confirmPassword) {
-        return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
-    }
-    const user = await User_js_1.default.findOne({ email: email.toLowerCase().trim() }).select("+password +passwordResetOtpHash");
-    if (!user || !user.passwordResetOtpHash) {
-        return res.status(400).json({ success: false, message: "Invalid password reset request." });
-    }
-    if (!user.passwordResetExpiresAt || user.passwordResetExpiresAt < new Date()) {
-        return res.status(400).json({ success: false, message: "OTP has expired. Please request a new one." });
-    }
-    const maxAttempts = Number(process.env.EMAIL_OTP_MAX_ATTEMPTS || 5);
-    if (user.passwordResetAttempts >= maxAttempts) {
-        return res.status(429).json({ success: false, message: "Too many incorrect attempts. Please request a new OTP." });
-    }
-    const isValidOtp = await (0, generateOtp_js_1.compareOtp)(otp, user.passwordResetOtpHash);
-    if (!isValidOtp) {
-        user.passwordResetAttempts += 1;
-        await user.save();
-        return res.status(400).json({ success: false, message: "Invalid OTP." });
-    }
-    user.password = password;
-    user.passwordResetOtpHash = "";
-    user.passwordResetExpiresAt = null;
-    user.passwordResetAttempts = 0;
-    user.passwordResetLastSentAt = null;
-    await user.save();
-    return res.json({ success: true, message: "Password has been reset successfully." });
+const resetPassword = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Email password reset is unavailable. Please contact an administrator for account recovery.",
+    });
 };
 exports.resetPassword = resetPassword;
 const resubmitRejectedClient = async (req, res) => {
@@ -520,34 +528,10 @@ const changePassword = async (req, res) => {
     return res.json({ success: true, message: "Password changed successfully." });
 };
 exports.changePassword = changePassword;
-const sendTestEmail = async (req, res) => {
-    if (process.env.NODE_ENV !== "development") {
-        return res.status(403).json({
-            success: false,
-            message: "Test email endpoint is only available in development.",
-        });
-    }
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ success: false, message: "Email is required." });
-    }
-    await (0, mailer_js_1.verifyMailer)();
-    const info = await (0, mailer_js_1.sendEmail)({
-        to: email.toLowerCase().trim(),
-        subject: "OTLI SMTP Test Email",
-        html: `
-      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111;">
-        <h2>OTLI SMTP Test</h2>
-        <p>If you received this email, Hostinger SMTP is working.</p>
-        <p>Sent at: ${new Date().toISOString()}</p>
-      </div>
-    `,
-        text: `OTLI SMTP Test. Sent at: ${new Date().toISOString()}`,
-    });
-    return res.json({
-        success: true,
-        message: "Test email was accepted by SMTP. Check Inbox, Spam, Promotions, or your Hostinger mail logs.",
-        emailDebug: info,
+const sendTestEmail = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Test email sending is disabled. Only client registration OTP emails are allowed.",
     });
 };
 exports.sendTestEmail = sendTestEmail;
