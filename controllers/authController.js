@@ -214,7 +214,7 @@ const requestClientRegistrationOtp = async (req, res) => {
     const otp = (0, generateOtp_js_1.generateOtp)();
     const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
     const passwordHash = await bcryptjs_1.default.hash(password, 10);
-    await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+    const registrationRecord = await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
         clientId: reservedClientId,
         companyName,
         companyAddress,
@@ -246,6 +246,10 @@ const requestClientRegistrationOtp = async (req, res) => {
     }, { upsert: true, new: true, setDefaultsOnInsert: true });
     await (0, mailer_js_1.sendEmail)({
         to: normalizedEmail,
+        eventKey: `registration-otp:${reservedClientId}:${otpHash}`,
+        eventType: "otp",
+        expiresAt: getOtpExpiryDate(),
+        otpContext: { kind: "registration", id: String(registrationRecord._id), hash: otpHash },
         subject: "OTLI Client Registration OTP",
         html: (0, emailTemplates_js_1.otpEmailTemplate)({
             title: "OTLI Client Registration",
@@ -286,6 +290,10 @@ const resendClientRegistrationOtp = async (req, res) => {
     await pending.save();
     await (0, mailer_js_1.sendEmail)({
         to: normalizedEmail,
+        eventKey: `registration-otp:${pending._id}:${pending.otpHash}`,
+        eventType: "otp",
+        expiresAt: pending.otpExpiresAt,
+        otpContext: { kind: "registration", id: String(pending._id), hash: pending.otpHash },
         subject: "OTLI Client Registration OTP",
         html: (0, emailTemplates_js_1.otpEmailTemplate)({
             title: "OTLI Client Registration",
@@ -392,6 +400,10 @@ const forgotPassword = async (req, res) => {
     await user.save();
     await (0, mailer_js_1.sendEmail)({
         to: user.email,
+        eventKey: `password-reset-otp:${user._id}:${user.passwordResetOtpHash}`,
+        eventType: "otp",
+        expiresAt: user.passwordResetExpiresAt,
+        otpContext: { kind: "password_reset", id: String(user._id), hash: user.passwordResetOtpHash },
         subject: "OTLI Password Reset OTP",
         html: (0, emailTemplates_js_1.otpEmailTemplate)({
             title: "OTLI Password Reset",
@@ -534,6 +546,8 @@ const sendTestEmail = async (req, res) => {
     await (0, mailer_js_1.verifyMailer)();
     const info = await (0, mailer_js_1.sendEmail)({
         to: email.toLowerCase().trim(),
+        eventKey: `development-smtp-test:${Date.now()}:${require("node:crypto").randomUUID()}`,
+        eventType: "test",
         subject: "OTLI SMTP Test Email",
         html: `
       <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111;">
@@ -546,8 +560,8 @@ const sendTestEmail = async (req, res) => {
     });
     return res.json({
         success: true,
-        message: "Test email was accepted by SMTP. Check Inbox, Spam, Promotions, or your Hostinger mail logs.",
-        emailDebug: info,
+        message: "Test email was accepted by SMTP (not proof of inbox delivery).",
+        emailDebug: { status: info.status, messageId: info.messageId },
     });
 };
 exports.sendTestEmail = sendTestEmail;

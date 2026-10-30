@@ -62,6 +62,12 @@ const userSchema = new mongoose_1.default.Schema({
         default: "active",
     },
     isEmailVerified: { type: Boolean, default: false },
+    marketingEmailConsent: {
+        enabled: { type: Boolean, default: false },
+        consentAt: { type: Date, default: null },
+        source: { type: String, default: "" },
+        unsubscribedAt: { type: Date, default: null },
+    },
     isLockedSeed: { type: Boolean, default: false },
     permissions: {
         dashboard: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },
@@ -96,6 +102,7 @@ const userSchema = new mongoose_1.default.Schema({
     passwordResetAttempts: { type: Number, default: 0 },
     passwordResetLastSentAt: { type: Date, default: null },
 }, { timestamps: true });
+userSchema.index({ userType: 1, status: 1, "marketingEmailConsent.enabled": 1, _id: 1 });
 userSchema.pre("validate", function () {
     if (this.userType !== "admin")
         return;

@@ -11,7 +11,15 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node seed/seedSuperAdmin.js",
-    "backfill:release-reports": "node seed/backfillReleaseReports.js"
+    "backfill:release-reports": "node seed/backfillReleaseReports.js",
+    "test": "vitest run",
+    "test:offline": "node --test tests/*.node.test.js",
+    "email:simulate": "node scripts/simulateEmailLoad.js",
+    "email:dns": "node scripts/checkEmailDns.js",
+    "email:worker": "node scripts/emailWorker.js",
+    "email:indexes": "node scripts/createEmailIndexes.js",
+    "test:integration": "node --test tests/emailIntegration.node.test.js",
+    "email:staging-load": "node scripts/stageEmailQueue.js"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",
@@ -26,9 +34,12 @@
     "morgan": "1.10.0",
     "multer": "1.4.5-lts.1",
     "nodemailer": "6.9.16",
-    "socket.io": "4.8.1"
+    "socket.io": "4.8.1",
+    "bullmq": "^5.81.5",
+    "ioredis": "^5.9.3"
   },
   "devDependencies": {
-    "nodemon": "3.1.9"
+    "nodemon": "3.1.9",
+    "vitest": "^4.0.0"
   }
 }

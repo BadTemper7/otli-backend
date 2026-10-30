@@ -26,6 +26,7 @@ const storageMonitoringController = require("../controllers/storageMonitoringCon
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.adminOnly);
 router.use(auditMiddleware_js_1.auditAdminMutations);
+router.use("/email", require("./emailAdminRoutes.js"));
 router.get(
   "/audit-logs",
   (0, authMiddleware_js_1.requirePermission)("reports", "view"),

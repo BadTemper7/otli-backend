@@ -17,6 +17,29 @@ const paymentTypeController_js_1 = require("../controllers/paymentTypeController
 const notificationController_js_1 = require("../controllers/notificationController.js");
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.clientOnly);
+
+// Explicit opt-in/opt-out: no administrator may silently opt users into marketing.
+router.get("/email-preferences", (req, res) => res.json({
+  success: true,
+  marketing: { enabled: Boolean(req.user.marketingEmailConsent?.enabled), consentAt: req.user.marketingEmailConsent?.consentAt || null },
+}));
+router.patch("/email-preferences", (0, asyncHandler_js_1.default)(async (req, res) => {
+  if (typeof req.body.marketingEnabled !== "boolean") return res.status(400).json({ success: false, message: "marketingEnabled must be boolean" });
+  const enabled = req.body.marketingEnabled;
+  if (enabled) {
+    // Never override provider complaints or all-address suppressions.
+    const { isSuppressed } = require("../services/emailService.js");
+    const { addressHash } = require("../services/emailCrypto.js");
+    if (await isSuppressed(addressHash(req.user.email), "marketing")) return res.status(409).json({ success: false, message: "Email cannot be subscribed while suppressed" });
+  }
+  const User = require("../models/User.js").default;
+  await User.updateOne({ _id: req.user._id }, { $set: {
+    "marketingEmailConsent.enabled": enabled,
+    ...(enabled ? { "marketingEmailConsent.consentAt": new Date(), "marketingEmailConsent.source": "authenticated_client_preferences", "marketingEmailConsent.unsubscribedAt": null } : { "marketingEmailConsent.unsubscribedAt": new Date() }),
+  } });
+  return res.json({ success: true, marketing: { enabled } });
+}));
+
 router.patch(
   "/account/resubmit",
   uploadMiddleware_js_1.clientRegistrationUpload,

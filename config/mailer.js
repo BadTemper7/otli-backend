@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendEmail = exports.verifyMailer = exports.getTransporter = void 0;
+exports.sendEmail = exports.sendNow = exports.verifyMailer = exports.getTransporter = void 0;
 const nodemailer_1 = __importDefault(require("nodemailer"));
 let transporter;
 let verifiedOnce = false;
@@ -44,50 +44,45 @@ const getTransporter = () => {
 };
 exports.getTransporter = getTransporter;
 const verifyMailer = async () => {
+    if (process.env.EMAIL_DELIVERY_MODE === "mock" && ["development", "test"].includes(process.env.NODE_ENV)) return true;
     const mailer = (0, exports.getTransporter)();
     await mailer.verify();
     verifiedOnce = true;
     return true;
 };
 exports.verifyMailer = verifyMailer;
-const sendEmail = async ({ to, subject, html, text }) => {
-    if (!to || !subject || (!html && !text)) {
-        throw new Error("Email recipient, subject, and content are required.");
+// Internal transport only. Controllers must call sendEmail, which enqueues safely.
+const sendNow = async ({ to, subject, html, text, headers }) => {
+    if (process.env.EMAIL_DELIVERY_MODE === "mock") {
+        if (process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "development") throw new Error("Mock SMTP mode is forbidden in production");
+        const response = String(process.env.EMAIL_MOCK_RESPONSE || "accepted");
+        if (response !== "accepted") {
+            const mockErrors = { throttle: [421, "too many messages"], temporary: [451, "temporary problem"], hard_bounce: [550, "5.1.1 no such mailbox"], suspended: [554, "account suspended"], auth: [535, "authentication failed"], uncertain: [0, "connection lost after DATA"] };
+            const [responseCode, description] = mockErrors[response] || [550, "permanent failure"];
+            const error = new Error(description);
+            if (responseCode) error.responseCode = responseCode;
+            throw error;
+        }
+        return { messageId: `mock-${require("node:crypto").randomUUID()}` };
     }
-    const mailer = (0, exports.getTransporter)();
-    if (!verifiedOnce && process.env.NODE_ENV === "development") {
-        await (0, exports.verifyMailer)();
-    }
-    const info = await mailer.sendMail({
+    const info = await (0, exports.getTransporter)().sendMail({
         from: getMailFrom(),
         to,
         subject,
         html,
         text,
+        headers,
         replyTo: process.env.MAIL_REPLY_TO || process.env.SMTP_USER,
-        envelope: {
-            from: process.env.SMTP_USER,
-            to,
-        },
+        envelope: { from: process.env.SMTP_USER, to },
     });
-    const accepted = Array.isArray(info.accepted) ? info.accepted : [];
-    const rejected = Array.isArray(info.rejected) ? info.rejected : [];
-    console.log("[mail] sent", {
-        to,
-        subject,
-        messageId: info.messageId,
-        accepted,
-        rejected,
-        response: info.response,
-    });
-    if (accepted.length === 0 && rejected.length > 0) {
-        throw new Error(`Email was rejected by SMTP: ${rejected.join(", ")}`);
+    if (!Array.isArray(info.accepted) || info.accepted.length !== 1) {
+        const e = new Error("Provider did not accept the single recipient");
+        e.responseCode = Array.isArray(info.rejected) && info.rejected.length ? 550 : 0;
+        throw e;
     }
-    return {
-        messageId: info.messageId,
-        accepted,
-        rejected,
-        response: info.response,
-    };
+    // Never log recipients, message bodies, OTPs, provider replies, or credentials.
+    return { messageId: info.messageId || "" };
 };
+exports.sendNow = sendNow;
+const sendEmail = options => require("../services/emailService.js").enqueueEmail(options);
 exports.sendEmail = sendEmail;

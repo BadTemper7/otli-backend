@@ -1149,6 +1149,10 @@ const notifyEmail = async ({ to, subject, title, booking, message, details = [],
         await (0, mailer_js_1.sendEmail)({
             to,
             subject,
+            category: "transactional",
+            eventType: "booking_status",
+            eventKey: `booking:${booking._id}:${booking.status}:${booking.billingStatus}:${title}:${message}`,
+            awaitAcceptance: false,
             html: (0, emailTemplates_js_1.bookingStatusEmailTemplate)({
                 title,
                 reference: booking.bookingReference,
@@ -1163,7 +1167,7 @@ const notifyEmail = async ({ to, subject, title, booking, message, details = [],
         });
     }
     catch (error) {
-        console.error("[booking-email] failed", { to, subject, error: error.message });
+        console.error("[booking-email] queue failure", { code: error?.code || "QUEUE_ERROR" });
     }
 };
 const notifyClient = async (booking, title, message, details = [], options = {}) => {

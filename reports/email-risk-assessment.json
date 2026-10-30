@@ -1,0 +1,203 @@
+{
+  "generatedAt": "2026-10-30T03:12:46.198Z",
+  "mode": "virtual mocked provider; NO SMTP, NO Redis/Mongo integration",
+  "limits": [
+    {
+      "windowMs": 1000,
+      "providerMax": 1
+    },
+    {
+      "windowMs": 60000,
+      "providerMax": 5
+    },
+    {
+      "windowMs": 3600000,
+      "providerMax": 50
+    },
+    {
+      "windowMs": 86400000,
+      "providerMax": 100
+    }
+  ],
+  "marketingEffectiveLimits": [
+    [
+      1000,
+      1
+    ],
+    [
+      60000,
+      4
+    ],
+    [
+      3600000,
+      40
+    ],
+    [
+      86400000,
+      80
+    ]
+  ],
+  "scenarios": [
+    {
+      "scenario": "Small batch",
+      "simulatedRecipients": 10,
+      "queuedEmails": 9,
+      "acceptedByMockProvider": 9,
+      "hardBounces": 0,
+      "complaints": 0,
+      "failedJobs": 0,
+      "duplicatesPrevented": 0,
+      "suppressedRecipients": 0,
+      "invalidAddresses": 1,
+      "temporaryFailuresRetried": 0,
+      "providerThrottles": 0,
+      "simulatedBounceRatePct": 0,
+      "simulatedComplaintRatePct": 0,
+      "rateLimitViolations": 0,
+      "restartRecovered": true,
+      "virtualDurationDays": 0,
+      "simulatedProviderThroughputPerVirtualDay": 6479.84,
+      "simulatorRunMs": 0.7,
+      "processCpuTimeMs": 0.7,
+      "heapIncreaseMiB": 0.04
+    },
+    {
+      "scenario": "Medium batch",
+      "simulatedRecipients": 100,
+      "queuedEmails": 99,
+      "acceptedByMockProvider": 99,
+      "hardBounces": 0,
+      "complaints": 0,
+      "failedJobs": 0,
+      "duplicatesPrevented": 1,
+      "suppressedRecipients": 0,
+      "invalidAddresses": 1,
+      "temporaryFailuresRetried": 0,
+      "providerThrottles": 0,
+      "simulatedBounceRatePct": 0,
+      "simulatedComplaintRatePct": 0,
+      "rateLimitViolations": 0,
+      "restartRecovered": true,
+      "virtualDurationDays": 1,
+      "simulatedProviderThroughputPerVirtualDay": 98.72,
+      "simulatorRunMs": 0.5,
+      "processCpuTimeMs": 0.5,
+      "heapIncreaseMiB": 0.2
+    },
+    {
+      "scenario": "Large batch",
+      "simulatedRecipients": 1000,
+      "queuedEmails": 990,
+      "acceptedByMockProvider": 990,
+      "hardBounces": 0,
+      "complaints": 0,
+      "failedJobs": 0,
+      "duplicatesPrevented": 18,
+      "suppressedRecipients": 5,
+      "invalidAddresses": 5,
+      "temporaryFailuresRetried": 0,
+      "providerThrottles": 0,
+      "simulatedBounceRatePct": 0,
+      "simulatedComplaintRatePct": 0,
+      "rateLimitViolations": 0,
+      "restartRecovered": true,
+      "virtualDurationDays": 12,
+      "simulatedProviderThroughputPerVirtualDay": 82.47,
+      "simulatorRunMs": 4.3,
+      "processCpuTimeMs": 5.3,
+      "heapIncreaseMiB": 0
+    },
+    {
+      "scenario": "Very large batch",
+      "simulatedRecipients": 10000,
+      "queuedEmails": 9902,
+      "acceptedByMockProvider": 9898,
+      "hardBounces": 4,
+      "complaints": 1,
+      "failedJobs": 0,
+      "duplicatesPrevented": 188,
+      "suppressedRecipients": 50,
+      "invalidAddresses": 48,
+      "temporaryFailuresRetried": 6,
+      "providerThrottles": 1,
+      "simulatedBounceRatePct": 0.04,
+      "simulatedComplaintRatePct": 0.01,
+      "rateLimitViolations": 0,
+      "restartRecovered": true,
+      "virtualDurationDays": 123.05,
+      "simulatedProviderThroughputPerVirtualDay": 80.44,
+      "simulatorRunMs": 21.7,
+      "processCpuTimeMs": 32.9,
+      "heapIncreaseMiB": 3.3
+    },
+    {
+      "scenario": "Stress test",
+      "simulatedRecipients": 50000,
+      "queuedEmails": 49511,
+      "acceptedByMockProvider": 49489,
+      "hardBounces": 18,
+      "complaints": 5,
+      "failedJobs": 4,
+      "duplicatesPrevented": 935,
+      "suppressedRecipients": 252,
+      "invalidAddresses": 237,
+      "temporaryFailuresRetried": 32,
+      "providerThrottles": 6,
+      "simulatedBounceRatePct": 0.036,
+      "simulatedComplaintRatePct": 0.01,
+      "rateLimitViolations": 0,
+      "restartRecovered": true,
+      "virtualDurationDays": 619.01,
+      "simulatedProviderThroughputPerVirtualDay": 79.95,
+      "simulatorRunMs": 87.2,
+      "processCpuTimeMs": 130.1,
+      "heapIncreaseMiB": 3.39
+    }
+  ],
+  "negativeTests": {
+    "suspensionEvents": 1,
+    "providerSuspensionPauses": true,
+    "jobsPreservedOnSuspension": 983,
+    "unauthorizedResumeBlocked": true,
+    "redisOutagePreservesQueuedJobs": 10000,
+    "sendsDuringSimulatedRedisOutage": 0,
+    "ambiguousSmtpOutcomesAutomaticallyRetried": 0,
+    "scenarios": [
+      "1000 concurrent requests",
+      "10000 queued",
+      "provider 421",
+      "SMTP 451",
+      "hard bounce",
+      "complaint",
+      "duplicate event",
+      "provider 554 suspension",
+      "Redis disconnection",
+      "worker restart"
+    ]
+  },
+  "totals": {
+    "totalSimulatedRecipients": 61110,
+    "totalQueuedEmails": 60511,
+    "successfullyProcessedJobs": 60485,
+    "confirmedDelivered": 0,
+    "rateLimitViolations": 0,
+    "failedJobs": 4,
+    "duplicateEmailsPrevented": 1142,
+    "suppressedRecipients": 307,
+    "invalidRecipientAddresses": 292,
+    "hardBounces": 22,
+    "complaints": 6,
+    "simulatedThrottles": 7,
+    "simulatedSuspensionEvents": 1,
+    "queueRecoveryStatus": "PASS (virtual simulation only)",
+    "overallRiskAssessment": "Controlled in virtual model; production risk cannot be certified without live infrastructure/provider validation"
+  },
+  "outstandingVerification": [
+    "Redis/BullMQ multi-instance integration",
+    "Mongo failure/restart integration",
+    "actual provider policy and quota",
+    "domain SPF/DKIM/DMARC",
+    "authenticated webhook mapping",
+    "production warm-up plan"
+  ]
+}
