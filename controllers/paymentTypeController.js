@@ -26,19 +26,35 @@ const safePaymentType = (paymentType) => {
     };
 };
 exports.safePaymentType = safePaymentType;
-const ensureDefaultCashPaymentType = async () => {
-    const existing = await PaymentType_js_1.default.findOne({ type: "cash", name: /^Cash$/i });
-    if (existing)
-        return existing;
-    return PaymentType_js_1.default.create({
-        type: "cash",
-        name: "Cash",
-        bankName: "",
-        accountNumber: "",
-        accountName: "",
-        instructions: "Pay cash at the authorized cashier and keep the official receipt.",
-        status: "active",
-    });
+// The Cash method still auto-exists, but concurrent admin/client reads should
+// not all query and potentially race to create it. Retry on connection failure.
+let cashEnsured = false;
+let cashEnsurePromise = null;
+const ensureDefaultCashPaymentType = () => {
+    if (cashEnsured) return Promise.resolve();
+    if (cashEnsurePromise) return cashEnsurePromise;
+    cashEnsurePromise = (async () => {
+        const existing = await PaymentType_js_1.default.findOne({ type: "cash", name: /^Cash$/i });
+        if (!existing) {
+            try {
+                await PaymentType_js_1.default.create({
+                    type: "cash",
+                    name: "Cash",
+                    bankName: "",
+                    accountNumber: "",
+                    accountName: "",
+                    instructions: "Pay cash at the authorized cashier and keep the official receipt.",
+                    status: "active",
+                });
+            } catch (error) {
+                // Two separate Node processes may initialize simultaneously.
+                // Ignore only a unique-key collision after verifying Cash exists.
+                if (error?.code !== 11000 || !(await PaymentType_js_1.default.exists({ type: "cash", name: /^Cash$/i }))) throw error;
+            }
+        }
+        cashEnsured = true;
+    })().finally(() => { cashEnsurePromise = null; });
+    return cashEnsurePromise;
 };
 const normalizePayload = (body = {}) => ({
     type: body.type === "ewallet" ? "ewallet" : "bank",
@@ -95,7 +111,7 @@ const listPaymentTypes = async (req, res) => {
             { accountNumber: { $regex: term, $options: "i" } },
         ];
     }
-    const paymentTypes = await PaymentType_js_1.default.find(query).sort({ status: 1, type: 1, name: 1 });
+    const paymentTypes = await PaymentType_js_1.default.find(query).sort({ status: 1, type: 1, name: 1 }).lean();
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listPaymentTypes = listPaymentTypes;
@@ -104,7 +120,7 @@ const listActivePaymentTypes = async (req, res) => {
     const paymentTypes = await PaymentType_js_1.default.find({
         status: "active",
         type: { $in: ["bank", "ewallet"] },
-    }).sort({ type: 1, name: 1 });
+    }).sort({ type: 1, name: 1 }).lean();
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listActivePaymentTypes = listActivePaymentTypes;

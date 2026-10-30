@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getOperationsDashboard = exports.getYardContainerReport = void 0;
 const Booking_js_1 = __importDefault(require("../models/Booking.js"));
+const { yardBookingPipeline, summarizeYardBookingGroups } = require("../utils/adminMetrics.js");
 const User_js_1 = __importDefault(require("../models/User.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
@@ -287,37 +288,18 @@ const getYardContainerReport = async (req, res) => {
     }
     if (dateQuery)
         releaseQuery.releasedAt = dateQuery;
-    const [bookings, releaseReports, clientUsers] = await Promise.all([
-        Booking_js_1.default.find(query)
-            .select("client containerSize containerLoadStatus rateType recordSource status assignedArea assignedBlock inDate storageStartDate assignedAt createdAt")
-            .populate("client", "name companyName email")
-            .lean(),
+    const [bookingGroups, releaseReports, clientUsers] = await Promise.all([
+        Booking_js_1.default.aggregate(yardBookingPipeline(query)),
         ReleaseReport_js_1.default.find(releaseQuery)
             .populate("client", "name companyName email")
-            .populate("booking", "paymentTransactions billingTotal billingLineItems")
+            .populate("booking", "paymentTransactions billingTotal")
             .sort({ releasedAt: -1, generatedAt: -1 })
             .limit(1000)
             .lean(),
         User_js_1.default.find({ userType: "client" }).select("name companyName email").sort({ companyName: 1, name: 1 }).lean(),
     ]);
-    const empty = emptySizeCounts();
-    const laden = emptySizeCounts();
-    const international = emptySizeCounts();
-    const local = emptySizeCounts();
-    let totalTeu = 0;
-    let totalFeu = 0;
-    let legacyContainers = 0;
+    const { empty, laden, international, local, totalTeu, totalFeu, legacyContainers, totalContainersInYard } = summarizeYardBookingGroups(bookingGroups);
     const revenueByClient = new Map();
-    for (const booking of bookings) {
-        const size = Number(booking.containerSize) || 20;
-        const loadStatus = String(booking.containerLoadStatus || "laden").toLowerCase();
-        addContainer(loadStatus === "empty" ? empty : laden, size);
-        if (normalizeRateType(booking.rateType) === "international") addContainer(international, size);
-        else addContainer(local, size);
-        if (booking.recordSource === "legacy_migration") legacyContainers += 1;
-        totalTeu += getTeu(size);
-        totalFeu += getFeu(size);
-    }
     for (const report of releaseReports) {
         const clientId = report.client?._id ? String(report.client._id) : String(report.client || "");
         if (!clientId)
@@ -351,7 +333,7 @@ const getYardContainerReport = async (req, res) => {
             recordSource: req.query.recordSource || "",
         },
         report: {
-            totalContainersInYard: bookings.length,
+            totalContainersInYard,
             legacyContainers,
             empty,
             laden,

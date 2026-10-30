@@ -26,15 +26,20 @@ const captureController = (handler, req) => new Promise((resolve, reject) => {
 });
 
 const getBookingModuleData = async (req, res) => {
-    const [table, summary] = await Promise.all([
-        captureController(bookingController.listAdminBookings, req),
-        captureController(bookingController.getBookingSummary, req),
-    ]);
+    const summaryOnly = String(req.query?.summaryOnly || "false") === "true";
+    if (summaryOnly) {
+        const payload = await captureController(bookingController.getBookingSummary, req);
+        return res.json({ success: true, summary: payload.summary || {} });
+    }
+    const includeSummary = String(req.query?.includeSummary || "true") !== "false";
+    const tablePromise = captureController(bookingController.listAdminBookings, req);
+    const summaryPromise = includeSummary ? captureController(bookingController.getBookingSummary, req) : Promise.resolve(null);
+    const [table, summary] = await Promise.all([tablePromise, summaryPromise]);
     return res.json({
         success: true,
         bookings: table.bookings || [],
         pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
-        summary: summary.summary || {},
+        ...(includeSummary ? { summary: summary?.summary || {} } : {}),
     });
 };
 exports.getBookingModuleData = getBookingModuleData;

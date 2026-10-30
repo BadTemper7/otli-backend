@@ -110,6 +110,20 @@ const listStorageYardAreas = async (_req, res) => {
     });
 };
 
+// A light read-only block list. Unlike Yard Setup's legacy list route, this
+// never auto-creates a default block when an area has none.
+const getStorageYardBlocks = async (req, res) => {
+    const { areaId } = req.params || {};
+    if (!validAreaId(areaId)) {
+        return res.status(400).json({ success: false, message: "Please select a valid yard area." });
+    }
+    const area = await YardArea.findById(areaId).select("_id").lean();
+    if (!area) return res.status(404).json({ success: false, message: "Yard area not found." });
+    const blockRows = await YardBlock.find({ area: areaId }).select(MAP_BLOCK_FIELDS)
+        .sort({ sortOrder: 1, code: 1, _id: 1 }).lean();
+    return res.json({ success: true, blocks: blockRows.map(toBlock) });
+};
+
 const getStorageYardSlotMap = async (req, res) => {
     const { areaId } = req.params || {};
     if (!validAreaId(areaId)) {
@@ -141,6 +155,7 @@ module.exports = {
     listStorageContainers,
     listStorageYardAreas,
     getStorageYardSlotMap,
+    getStorageYardBlocks,
     toArea,
     toBlock,
     validAreaId,

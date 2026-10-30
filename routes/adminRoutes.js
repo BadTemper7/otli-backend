@@ -533,18 +533,28 @@ router.delete(
 // Dedicated Storage Monitoring reads. Keep these ahead of generic Inventory routes.
 router.get(
   "/storage-monitoring/containers",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
   (0, asyncHandler_js_1.default)(
     storageMonitoringController.listStorageContainers,
   ),
 );
 router.get(
   "/storage-monitoring/areas",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
   (0, asyncHandler_js_1.default)(
     storageMonitoringController.listStorageYardAreas,
   ),
 );
 router.get(
+  "/storage-monitoring/areas/:areaId/blocks",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(
+    storageMonitoringController.getStorageYardBlocks,
+  ),
+);
+router.get(
   "/storage-monitoring/areas/:areaId/slot-map",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
   (0, asyncHandler_js_1.default)(
     storageMonitoringController.getStorageYardSlotMap,
   ),

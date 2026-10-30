@@ -39,6 +39,7 @@ const releaseReportSchema = new mongoose_1.default.Schema({
     generatedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
 }, { timestamps: true });
 releaseReportSchema.index({ client: 1, releasedAt: -1 });
+releaseReportSchema.index({ releasedAt: -1, generatedAt: -1 });
 releaseReportSchema.pre("validate", function () {
     if (this.containerNumber)
         this.containerNumber = String(this.containerNumber).toUpperCase().replace(/[^A-Z0-9]/g, "").trim();

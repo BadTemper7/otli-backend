@@ -3940,23 +3940,24 @@ const getPublicBookingByNumber = async (req, res) => {
     });
 };
 exports.getPublicBookingByNumber = getPublicBookingByNumber;
-const getBookingSummary = async (req, res) => {
-    const [total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid] = await Promise.all([
-        Booking_js_1.default.countDocuments(),
-        Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
-        Booking_js_1.default.countDocuments({ status: "approved_area_assigned" }),
-        Booking_js_1.default.countDocuments({ status: "gate_in_approved" }),
-        Booking_js_1.default.countDocuments({ status: "stored_in_assigned_area" }),
-        Booking_js_1.default.countDocuments({ status: "gate_out_requested" }),
-        Booking_js_1.default.countDocuments({ status: "gate_out_reversal_requested" }),
-        Booking_js_1.default.countDocuments({ status: "completed_gate_out_done" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "unpaid" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "payment_under_review" }),
-        Booking_js_1.default.countDocuments({ billingStatus: "paid_approved" }),
-    ]);
-    return res.json({
-        success: true,
-        summary: { total, pending, approved, gateIn, stored, gateOutRequested, gateOutReversalRequested, completed, unpaid, paymentReview, paid },
+const { bookingSummaryPipeline, normalizeBookingSummary } = require("../utils/adminMetrics.js");
+let bookingSummaryCache = { value: null, expires: 0, promise: null };
+const computeBookingSummary = ({ force = false } = {}) => {
+    if (!force && bookingSummaryCache.value && bookingSummaryCache.expires > Date.now()) return Promise.resolve(bookingSummaryCache.value);
+    if (bookingSummaryCache.promise) return bookingSummaryCache.promise;
+    const promise = Booking_js_1.default.aggregate(bookingSummaryPipeline()).then((rows) => {
+        const summary = normalizeBookingSummary(rows[0]);
+        bookingSummaryCache = { value: summary, expires: Date.now() + 12000, promise: null };
+        return summary;
+    }).catch((error) => {
+        bookingSummaryCache.promise = null;
+        throw error;
     });
+    bookingSummaryCache.promise = promise;
+    return promise;
+};
+const getBookingSummary = async (req, res) => {
+    const summary = await computeBookingSummary({ force: String(req.query?.refreshSummary || "false") === "true" });
+    return res.json({ success: true, summary });
 };
 exports.getBookingSummary = getBookingSummary;
