@@ -14,8 +14,6 @@ const SpecialRate_js_1 = __importDefault(require("../models/SpecialRate.js"));
 const PaymentType_js_1 = __importDefault(require("../models/PaymentType.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
-const mailer_js_1 = require("../config/mailer.js");
-const emailTemplates_js_1 = require("../utils/emailTemplates.js");
 const socket_js_1 = require("../socket/socket.js");
 const bookingNumber_js_1 = require("../utils/bookingNumber.js");
 const billingDays_js_1 = require("../utils/billingDays.js");
@@ -1142,30 +1140,6 @@ const safeBooking = (booking) => {
         updatedAt: doc.updatedAt,
     };
 };
-const notifyEmail = async ({ to, subject, title, booking, message, details = [], qrCodeValue = "", trackingUrl = "" }) => {
-    if (!to)
-        return;
-    try {
-        await (0, mailer_js_1.sendEmail)({
-            to,
-            subject,
-            html: (0, emailTemplates_js_1.bookingStatusEmailTemplate)({
-                title,
-                reference: booking.bookingReference,
-                status: booking.status,
-                billingStatus: booking.billingStatus,
-                message,
-                details,
-                qrCodeValue,
-                trackingUrl,
-            }),
-            text: `${title}\n${message}\nBooking: ${booking.bookingReference}\nStatus: ${booking.status}\nBilling: ${booking.billingStatus}`,
-        });
-    }
-    catch (error) {
-        console.error("[booking-email] failed", { to, subject, error: error.message });
-    }
-};
 const notifyClient = async (booking, title, message, details = [], options = {}) => {
     const populated = booking.client?.email ? booking : await booking.populate("client", "name email companyName");
     const recipient = populated.client?._id || populated.client;
@@ -1185,29 +1159,6 @@ const notifyClient = async (booking, title, message, details = [], options = {})
             billingStatus: populated.billingStatus || "",
             details,
         },
-    });
-    await notifyEmail({
-        to: populated.client?.email,
-        subject: `${title} - ${populated.bookingReference}`,
-        title,
-        booking: populated,
-        message,
-        details,
-        qrCodeValue: options.qrCodeValue || populated.qrCodeValue || "",
-        trackingUrl: options.trackingUrl || "",
-    });
-};
-const notifyAdmin = async (booking, title, message, details = []) => {
-    const adminEmail = process.env.SUPER_ADMIN_EMAIL;
-    if (!adminEmail)
-        return;
-    await notifyEmail({
-        to: adminEmail,
-        subject: `${title} - ${booking.bookingReference}`,
-        title,
-        booking,
-        message,
-        details,
     });
 };
 const uploadBookingPreAdviceDocuments = async ({ files, bookingReference, clientId }) => {
@@ -1642,10 +1593,6 @@ const createClientBooking = async (req, res) => {
         { label: "Container Size", value: `${booking.containerSize}ft` },
         { label: "In Date", value: booking.inDate ? booking.inDate.toLocaleString() : "-" },
     ]);
-    await notifyAdmin(booking, "New booking pre-advice", "A client created a booking. It is ready for verification in the Pre-Advice module.", [
-        { label: "Client", value: getClientDisplayName(booking.client) },
-        { label: "Container", value: booking.containerNumber },
-    ]);
     return res.status(201).json({ success: true, message: "Booking submitted as pre-advice. Please wait for admin verification.", booking: payload });
 };
 exports.createClientBooking = createClientBooking;
@@ -1733,10 +1680,6 @@ const resubmitClientBooking = async (req, res) => {
     await notifyClient(booking, "Booking resubmitted", "Your booking has been resubmitted and is waiting for admin approval again.", [
         { label: "Container", value: booking.containerNumber },
         { label: "Status", value: "Pending Admin Approval" },
-    ]);
-    await notifyAdmin(booking, "Booking resubmitted", "A client resubmitted a rejected booking. Admin must review and assign a yard location again.", [
-        { label: "Client", value: getClientDisplayName(booking.client) },
-        { label: "Container", value: booking.containerNumber },
     ]);
     return res.json({ success: true, message: "Booking resubmitted. Please wait for admin approval.", booking: payload });
 };
@@ -2774,10 +2717,6 @@ const submitBookingPayment = async (req, res) => {
         { label: "Reference Number", value: booking.paymentReferenceNumber },
         { label: "Amount", value: `PHP ${paymentBalanceDue.toLocaleString()}` },
     ]);
-    await notifyAdmin(booking, `${stageLabel} payment submitted for review`, "A client submitted proof of payment for review.", [
-        { label: "Client", value: getClientDisplayName(booking.client) },
-        { label: "Reference Number", value: booking.paymentReferenceNumber },
-    ]);
     return res.json({ success: true, message: `${stageLabel} payment submitted for admin review.`, booking: payload });
 };
 exports.submitBookingPayment = submitBookingPayment;
@@ -3243,103 +3182,6 @@ const processBookingGateOutRequest = async ({ booking, req, res, requestedBy = "
             { label: "Gate-Out Balance Due", value: `PHP ${gateOutBalanceDue.toLocaleString()}` },
         ]
     );
-    await notifyAdmin(
-        booking,
-        requestedBy === "admin" ? "Gate-out initiated from Inventory" : "Gate-out requested",
-        requestedBy === "admin"
-            ? "An administrator initiated Gate-Out for a stored container from the Inventory module."
-            : "A client has submitted Date Out and requested gate-out release.",
-        [
-            { label: "Client", value: getClientDisplayName(booking.client) },
-            { label: "Container", value: booking.containerNumber },
-            { label: "Date Out", value: booking.outDate ? booking.outDate.toLocaleString() : "-" },
-        ]
-    );
-    return res.json({
-        success: true,
-        message: requestedBy === "admin"
-            ? "Gate-out initiated from Inventory. The Gate-Out billing transaction is now ready for payment and approval."
-            : "Gate-out request submitted. The separate Gate-Out transaction, including applicable storage charges, is ready for payment.",
-        booking: payload,
-    });
-};
-const requestBookingGateOut = async (req, res) => {
-    const booking = await Booking_js_1.default.findOne({ _id: req.params.id, client: req.user._id });
-    if (!booking)
-        return res.status(404).json({ success: false, message: "Booking not found." });
-    return processBookingGateOutRequest({ booking, req, res, requestedBy: "client" });
-};
-exports.requestBookingGateOut = requestBookingGateOut;
-const requestBookingGateOutByAdmin = async (req, res) => {
-    const booking = await Booking_js_1.default.findById(req.params.id);
-    if (!booking)
-        return res.status(404).json({ success: false, message: "Booking not found." });
-    return processBookingGateOutRequest({ booking, req, res, requestedBy: "admin" });
-};
-exports.requestBookingGateOutByAdmin = requestBookingGateOutByAdmin;
-const cancelBooking = async (req, res) => {
-    const booking = await Booking_js_1.default.findById(req.params.id);
-    if (!booking) return res.status(404).json({ success: false, message: "Booking not found." });
-    const cancellableStatuses = ["pending_admin_approval", "approved_area_assigned", "gate_in_approved"];
-    if (!cancellableStatuses.includes(booking.status)) {
-        return res.status(400).json({ success: false, message: "Only Pre-Advice and Gate-In records can be cancelled before storage or gate-out processing begins." });
-    }
-    const previousBlockId = booking.assignedBlock ? String(booking.assignedBlock) : "";
-    const reason = String(req.body.reason || "Cancelled by admin.").trim();
-    booking.status = "cancelled";
-    booking.rejectionReason = reason;
-    addHistory(booking, { status: "cancelled", remarks: reason, changedBy: req.user._id });
-    await booking.save();
-    if (previousBlockId) await recalculateBlockOccupancy(previousBlockId);
-    await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code isCongestionArea");
-    await booking.populate("assignedBlock", "name code");
-    const payload = safeBooking(booking);
-    (0, socket_js_1.emitToAdmins)("booking:cancelled", payload);
-    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:cancelled", payload);
-    return res.json({ success: true, message: "Booking cancelled.", booking: payload });
-};
-exports.cancelBooking = cancelBooking;
-const rejectBookingGateOut = async (req, res) => {
-    const booking = await Booking_js_1.default.findById(req.params.id);
-    if (!booking)
-        return res.status(404).json({ success: false, message: "Booking not found." });
-    if (booking.status !== "gate_out_requested") {
-        return res.status(400).json({ success: false, message: "Only pending gate-out requests can be rejected." });
-    }
-    const reason = String(req.body.reason || "").trim();
-    if (!reason) {
-        return res.status(400).json({ success: false, message: "A gate-out rejection reason is required." });
-    }
-    booking.gateOutRejectedAt = new Date();
-    booking.gateOutRejectedBy = req.user._id;
-    booking.gateOutRejectionReason = reason;
-
-    // A rejected Gate-Out means the container never left the yard. Return it
-    // to the stored inventory state so the client/admin can request Gate-Out
-    // again with a new Date Out. Keep the rejection audit fields above.
-    booking.status = "stored_in_assigned_area";
-    booking.outDate = null;
-    booking.gateOutRequestedAt = null;
-    booking.gateOutRequestRemarks = "";
-    booking.gateOutApprovedAt = null;
-    booking.gateOutApprovedBy = null;
-    booking.gateOutPassNumber = "";
-    booking.gateOutScheduleStatus = "not_scheduled";
-    booking.gateOutOverstayStartedAt = null;
-    booking.gateOutRateEffectiveAt = null;
-    addHistory(booking, { status: "stored_in_assigned_area", remarks: `Gate-out request rejected by admin: ${reason}. Container returned to Inventory and may request Gate-Out again.`, changedBy: req.user._id });
-    await booking.save();
-    await booking.populate("client", "name email companyName phoneNumber");
-    await booking.populate("assignedArea", "name code isCongestionArea");
-    await booking.populate("assignedBlock", "name code");
-    const payload = safeBooking(booking);
-    (0, socket_js_1.emitToAdmins)("booking:gate_out_rejected", payload);
-    (0, socket_js_1.emitToUser)(booking.client?._id || booking.client, "booking:gate_out_rejected", payload);
-    await notifyClient(booking, "Gate-out request rejected", "Your gate-out request was rejected. The container has been returned to Inventory and you may submit a new Gate-Out request.", [
-        { label: "Container", value: booking.containerNumber },
-        { label: "Reason", value: reason },
-    ]);
     return res.json({ success: true, message: "Gate-out request rejected. Container returned to Inventory and can request Gate-Out again.", booking: payload });
 };
 exports.rejectBookingGateOut = rejectBookingGateOut;
@@ -3423,11 +3265,6 @@ const requestGateOutReversal = async (req, res) => {
         { label: "Container", value: booking.containerNumber },
         { label: "Reason", value: reason },
     ], { notificationType: "gate_out_reversal_requested" });
-    await notifyAdmin(booking, "Gate-Out reversal requested", "A client requested that an approved Gate-Out be returned to storage.", [
-        { label: "Client", value: getClientDisplayName(booking.client) },
-        { label: "Container", value: booking.containerNumber },
-        { label: "Reason", value: reason },
-    ]);
     return res.json({ success: true, message: "Gate-Out reversal request submitted for admin review.", booking: payload });
 };
 exports.requestGateOutReversal = requestGateOutReversal;
