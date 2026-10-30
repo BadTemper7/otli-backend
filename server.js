@@ -26,11 +26,18 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const { createApiDiagnostics } = require("./middleware/apiDiagnostics.js");
+const { createDatabaseAvailability } = require("./middleware/databaseAvailability.js");
+const { createApiErrorHandler } = require("./middleware/apiErrorResponse.js");
 
-// Middleware
+// Middleware: keep existing CORS policy and API behavior unchanged.
 app.use(cors());
+app.use(createApiDiagnostics({ getDatabaseState: () => mongoose.connection.readyState }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// All database-dependent endpoints return a quick 503 if Atlas disconnects.
+// /api/test remains accessible to distinguish backend availability from DB health.
+app.use("/api", createDatabaseAvailability(() => mongoose.connection.readyState));
 
 // Local document storage. Client folders are created automatically on upload.
 // Storage is initialized again during server bootstrap before accepting requests.
@@ -104,6 +111,19 @@ app.get("/health", async (req, res) => {
     mongodb: databaseConnected ? "connected" : "disconnected",
     documentStorage,
     uptime: process.uptime(),
+  });
+});
+
+// Optional, read-only diagnostic: distinguishes a healthy MongoDB connection
+// from one which is stuck waiting for a database server. 3s maximum reply.
+const { probeDatabase } = require("./utils/databaseHealth.js");
+app.get("/health/database", async (_req, res) => {
+  const result = await probeDatabase(mongoose.connection);
+  res.setHeader("Cache-Control", "no-store");
+  res.status(result.healthy ? 200 : 503).json({
+    status: result.healthy ? "healthy" : "degraded",
+    mongodb: result.mongodb,
+    latencyMs: result.latencyMs,
   });
 });
 
@@ -273,14 +293,16 @@ app.use((req, res) => {
   });
 });
 
-// Error Handler
-app.use((err, req, res, next) => {
-  console.error("Error:", err.stack);
-  res.status(500).json({
-    error: "Something went wrong!",
-    message: err.message,
-  });
-});
+// Error Handler: distinguish transient MongoDB failures from application errors.
+// Never return raw connection strings, credentials or internal stack traces.
+app.use(createApiErrorHandler());
+
+// Avoid noisy and potentially sensitive raw driver error output.
+mongoose.connection.on("disconnected", () => console.warn("[database] MongoDB connection lost"));
+mongoose.connection.on("reconnected", () => console.info("[database] MongoDB connection restored"));
+mongoose.connection.on("error", (error) =>
+  console.error(`[database] connection error type=${String(error?.name || "Error").slice(0, 80)}`),
+);
 
 // Start HTTP and Socket.IO server
 const { initSocket } = require("./socket/socket.js");
@@ -299,8 +321,14 @@ const startServer = async () => {
   console.log(`📁 Document storage ready: ${storagePath}`);
 
   await mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+    // The MongoDB driver defaults to 30s for server selection. Waiting that
+    // long can outlast the browser's 30s Axios request deadline.
+    serverSelectionTimeoutMS: 12000,
+    connectTimeoutMS: 10000,
+    // Bound the time spent waiting for an exhausted connection pool.
+    waitQueueTimeoutMS: 8000,
+    maxPoolSize: 20,
+    maxIdleTimeMS: 60000,
   });
   console.log("✅ Connected to MongoDB successfully!");
 

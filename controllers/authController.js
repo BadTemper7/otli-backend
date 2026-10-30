@@ -98,19 +98,21 @@ const safeUser = (user) => {
     };
 };
 exports.safeUser = safeUser;
+const { timeRegistrationStage } = require("../utils/registrationTiming.js");
+
 const uploadRegistrationDocuments = async ({ files, clientId }) => {
-    const uploadedDocs = [];
-    for (const fieldName of Object.keys(documentLabels)) {
-        const file = files?.[fieldName]?.[0];
-        if (!file)
-            continue;
+    // A registration can include five documents. Writing them concurrently
+    // avoids serial filesystem delays during the OTP request.
+    const fields = Object.keys(documentLabels).filter((fieldName) => files?.[fieldName]?.[0]);
+    const results = await Promise.allSettled(fields.map(async (fieldName) => {
+        const file = files[fieldName][0];
         const result = await (0, localFileStorage_js_1.saveUploadedFile)({
             file,
             clientId,
             category: "registration",
             prefix: fieldName,
         });
-        uploadedDocs.push({
+        return {
             type: fieldName,
             label: documentLabels[fieldName],
             fileName: file.originalname,
@@ -121,9 +123,18 @@ const uploadRegistrationDocuments = async ({ files, clientId }) => {
             mimeType: file.mimetype,
             sizeBytes: file.size,
             uploadedAt: new Date(),
-        });
+        };
+    }));
+
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed) {
+        // Do not leave partial documents behind when one write fails.
+        await Promise.all(results.filter((result) => result.status === "fulfilled")
+            .map((result) => (0, localFileStorage_js_1.deleteLocalFile)(result.value.publicId)
+                .catch(() => undefined)));
+        throw failed.reason;
     }
-    return uploadedDocs;
+    return results.map((result) => result.value);
 };
 const login = async (req, res) => {
     const { email, password, loginType } = req.body;
@@ -162,6 +173,23 @@ const me = async (req, res) => {
     return res.json({ success: true, user: (0, exports.safeUser)(req.user) });
 };
 exports.me = me;
+// A stalled SMTP connection must not leave the registration page waiting for
+// the provider indefinitely. We never retry an uncertain SMTP send automatically
+// (it might have been accepted before the connection failed).
+const handleRegistrationEmailFailure = (error, res) => {
+    const code = String(error?.code || "SMTP_ERROR");
+    const safeCode = /^(E[A-Z_]{1,30}|SMTP_ERROR)$/.test(code) ? code : "SMTP_ERROR";
+    console.warn(`[registration] OTP SMTP send not confirmed code=${safeCode}`);
+    const retryAfterSeconds = Math.max(1, Number(process.env.EMAIL_OTP_RESEND_SECONDS || 60));
+    res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(503).json({
+        success: false,
+        code: "REGISTRATION_OTP_DELIVERY_UNCONFIRMED",
+        message: "OTP delivery could not be confirmed. Check your inbox (including spam). If no code arrives, please wait and use Resend OTP.",
+        retryAfterSeconds,
+    });
+};
+
 // Reserve a shared sending slot BEFORE saving/updating a registration OTP.
 // When the SMTP account is at its limit, an existing valid OTP is not replaced.
 const allowRegistrationOtpEmail = async (res) => {
@@ -215,27 +243,27 @@ const requestClientRegistrationOtp = async (req, res) => {
         return res.status(400).json({ success: false, message: "Please provide a valid email address." });
     }
     const normalizedEmail = email.toLowerCase().trim();
-    const existingUser = await User_js_1.default.findOne({ email: normalizedEmail });
+    const existingUser = await timeRegistrationStage(req, "userLookupMs", () => User_js_1.default.findOne({ email: normalizedEmail }));
     if (existingUser) {
         return res.status(409).json({ success: false, message: "Email is already registered." });
     }
-    const existingPending = await PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash");
+    const existingPending = await timeRegistrationStage(req, "pendingLookupMs", () => PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash"));
     if (existingPending && !canResendOtp(existingPending.otpLastSentAt)) {
         return res.status(429).json({
             success: false,
             message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
         });
     }
-    if (!(await allowRegistrationOtpEmail(res))) return;
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
     const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
-    const uploadedDocs = await uploadRegistrationDocuments({
+    const uploadedDocs = await timeRegistrationStage(req, "saveFilesMs", () => uploadRegistrationDocuments({
         files: req.files,
         clientId: reservedClientId,
-    });
+    }));
     const otp = (0, generateOtp_js_1.generateOtp)();
     const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    const passwordHash = await bcryptjs_1.default.hash(password, 10);
-    await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+    const passwordHash = await timeRegistrationStage(req, "hashPasswordMs", () => bcryptjs_1.default.hash(password, 10));
+    await timeRegistrationStage(req, "savePendingMs", () => PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
         clientId: reservedClientId,
         companyName,
         companyAddress,
@@ -264,15 +292,19 @@ const requestClientRegistrationOtp = async (req, res) => {
         otpExpiresAt: getOtpExpiryDate(),
         otpAttempts: 0,
         otpLastSentAt: new Date(),
-    }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    await (0, mailer_js_1.sendRegistrationOtpEmail)({
-        to: normalizedEmail,
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Client Registration",
-            otp,
-            message: "Use this OTP to verify your email and submit your client registration.",
-        }),
-    });
+    }, { upsert: true, new: true, setDefaultsOnInsert: true }));
+    try {
+        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
+            to: normalizedEmail,
+            html: (0, emailTemplates_js_1.otpEmailTemplate)({
+                title: "OTLI Client Registration",
+                otp,
+                message: "Use this OTP to verify your email and submit your client registration.",
+            }),
+        }));
+    } catch (error) {
+        return handleRegistrationEmailFailure(error, res);
+    }
     return res.json({ success: true, message: "OTP has been sent to your email." });
 };
 exports.requestClientRegistrationOtp = requestClientRegistrationOtp;
@@ -301,21 +333,25 @@ const resendClientRegistrationOtp = async (req, res) => {
             message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
         });
     }
-    if (!(await allowRegistrationOtpEmail(res))) return;
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
     const otp = (0, generateOtp_js_1.generateOtp)();
     pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
     pending.otpExpiresAt = getOtpExpiryDate();
     pending.otpAttempts = 0;
     pending.otpLastSentAt = new Date();
-    await pending.save();
-    await (0, mailer_js_1.sendRegistrationOtpEmail)({
-        to: normalizedEmail,
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Client Registration",
-            otp,
-            message: "Use this new OTP to verify your email and submit your client registration.",
-        }),
-    });
+    await timeRegistrationStage(req, "savePendingMs", () => pending.save());
+    try {
+        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
+            to: normalizedEmail,
+            html: (0, emailTemplates_js_1.otpEmailTemplate)({
+                title: "OTLI Client Registration",
+                otp,
+                message: "Use this new OTP to verify your email and submit your client registration.",
+            }),
+        }));
+    } catch (error) {
+        return handleRegistrationEmailFailure(error, res);
+    }
     return res.json({ success: true, message: "A new OTP has been sent to your email." });
 };
 exports.resendClientRegistrationOtp = resendClientRegistrationOtp;

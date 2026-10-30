@@ -36,9 +36,12 @@ const getTransporter = () => {
             servername: process.env.SMTP_HOST,
             rejectUnauthorized: parseBool(process.env.SMTP_TLS_REJECT_UNAUTHORIZED, true),
         },
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-        socketTimeout: 30000,
+        // Fail with a clear HTTP error instead of waiting up to 60 seconds
+        // for an unreachable SMTP server. These are network inactivity
+        // timeouts, not a guarantee of a maximum overall request duration.
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000,
     });
     return transporter;
 };
