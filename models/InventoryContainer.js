@@ -45,7 +45,4 @@ inventoryContainerSchema.index({ area: 1, block: 1, bay: 1, row: 1, tier: 1 });
 inventoryContainerSchema.index({ status: 1, createdAt: -1 });
 inventoryContainerSchema.index({ area: 1, status: 1, createdAt: -1 });
 inventoryContainerSchema.index({ containerNumber: 1, status: 1 });
-// Storage Monitoring: fast area/block-filtered paging and occupancy scans.
-inventoryContainerSchema.index({ area: 1, status: 1, createdAt: -1, _id: -1 });
-inventoryContainerSchema.index({ area: 1, block: 1, status: 1, createdAt: -1, _id: -1 });
 exports.default = mongoose_1.default.model("InventoryContainer", inventoryContainerSchema);

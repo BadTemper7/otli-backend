@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendRegistrationOtpEmail = exports.verifyMailer = exports.getTransporter = void 0;
+exports.sendEmail = exports.verifyMailer = exports.getTransporter = void 0;
 const nodemailer_1 = __importDefault(require("nodemailer"));
 let transporter;
 let verifiedOnce = false;
@@ -36,12 +36,9 @@ const getTransporter = () => {
             servername: process.env.SMTP_HOST,
             rejectUnauthorized: parseBool(process.env.SMTP_TLS_REJECT_UNAUTHORIZED, true),
         },
-        // Fail with a clear HTTP error instead of waiting up to 60 seconds
-        // for an unreachable SMTP server. These are network inactivity
-        // timeouts, not a guarantee of a maximum overall request duration.
-        connectionTimeout: 8000,
-        greetingTimeout: 8000,
-        socketTimeout: 12000,
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000,
     });
     return transporter;
 };
@@ -53,33 +50,44 @@ const verifyMailer = async () => {
     return true;
 };
 exports.verifyMailer = verifyMailer;
-// Only registration verification is permitted to send through the OTLI SMTP account.
-// The controller reserves a shared MongoDB sending slot before creating a new OTP.
-const sendRegistrationOtpEmail = async ({ to, html, text }) => {
-    const recipient = String(to || "").trim().toLowerCase();
-    if (!/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(recipient) || !html) {
-        throw new Error("A valid recipient and registration OTP template are required.");
+const sendEmail = async ({ to, subject, html, text }) => {
+    if (!to || !subject || (!html && !text)) {
+        throw new Error("Email recipient, subject, and content are required.");
     }
     const mailer = (0, exports.getTransporter)();
-    // Preserve the existing development-only SMTP connection check.
     if (!verifiedOnce && process.env.NODE_ENV === "development") {
         await (0, exports.verifyMailer)();
     }
     const info = await mailer.sendMail({
         from: getMailFrom(),
-        to: recipient,
-        subject: "OTLI Client Registration OTP",
+        to,
+        subject,
         html,
         text,
         replyTo: process.env.MAIL_REPLY_TO || process.env.SMTP_USER,
-        envelope: { from: process.env.SMTP_USER, to: recipient },
+        envelope: {
+            from: process.env.SMTP_USER,
+            to,
+        },
     });
     const accepted = Array.isArray(info.accepted) ? info.accepted : [];
-    if (!accepted.some((address) => String(address).toLowerCase() === recipient)) {
-        throw new Error("Registration OTP was not accepted by the SMTP provider.");
+    const rejected = Array.isArray(info.rejected) ? info.rejected : [];
+    console.log("[mail] sent", {
+        to,
+        subject,
+        messageId: info.messageId,
+        accepted,
+        rejected,
+        response: info.response,
+    });
+    if (accepted.length === 0 && rejected.length > 0) {
+        throw new Error(`Email was rejected by SMTP: ${rejected.join(", ")}`);
     }
-    // Avoid logging client addresses, OTPs, SMTP responses, or message identifiers.
-    console.info("[mail] registration OTP accepted by SMTP");
-    return { acceptedByProvider: true };
+    return {
+        messageId: info.messageId,
+        accepted,
+        rejected,
+        response: info.response,
+    };
 };
-exports.sendRegistrationOtpEmail = sendRegistrationOtpEmail;
+exports.sendEmail = sendEmail;
