@@ -29,9 +29,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-// Signed provider events need the exact raw bytes. Mount before JSON parsing.
-app.post("/api/email/webhook", express.raw({ type: "application/json", limit: "32kb" }), require("./routes/emailPublicRoutes.js").signedWebhook);
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Local document storage. Client folders are created automatically on upload.
@@ -255,7 +253,6 @@ const {
 } = require("./controllers/bookingController.js");
 const asyncHandler = require("./utils/asyncHandler.js").default;
 
-app.use("/api/email", require("./routes/emailPublicRoutes.js").router);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/client", clientRoutes);
@@ -278,19 +275,23 @@ app.use((req, res) => {
 
 // Error Handler
 app.use((err, req, res, next) => {
-  // Never echo SMTP/provider/Redis/Mongo exception bodies or stack traces;
-  // connection errors can embed credentials or recipient details.
-  console.error("API request failed:", err.code || "REQUEST_FAILED", req.path);
-  const permittedStatus = Number(err.status);
-  const status = Number.isInteger(permittedStatus) && permittedStatus >= 400 && permittedStatus < 500
-    ? permittedStatus
-    : permittedStatus === 503 ? 503 : 500;
-  const safeClientError = status < 500 && typeof err.message === "string"
-    ? err.message
-    : status === 503 && err.code === "EMAIL_STILL_QUEUED"
-      ? "Email is queued but not yet provider-accepted; do not request an immediate duplicate."
-      : "Something went wrong!";
-  res.status(status).json({ error: status >= 500 ? "Something went wrong!" : "Request rejected", message: safeClientError });
+  // Registration SMTP quota and temporary failures should be retriable by
+  // clients without exposing SMTP credentials or producing 500 responses.
+  if (err?.code === "REGISTRATION_EMAIL_RATE_LIMIT" ||
+      err?.code === "REGISTRATION_EMAIL_UNAVAILABLE") {
+    if (err.retryAfterSeconds) {
+      res.setHeader("Retry-After", String(err.retryAfterSeconds));
+    }
+    return res.status(err.statusCode || 503).json({
+      success: false,
+      message: err.message,
+    });
+  }
+  console.error("Error:", err.stack);
+  res.status(500).json({
+    error: "Something went wrong!",
+    message: err.message,
+  });
 });
 
 // Start HTTP and Socket.IO server
@@ -350,16 +351,6 @@ const startServer = async () => {
     }
   }
 
-  if (process.env.EMAIL_WORKER_ENABLED === "false") {
-    const emailCrypto = require("./services/emailCrypto.js");
-    emailCrypto.key(); emailCrypto.secret();
-    require("./services/emailPolicy.js").policy();
-    await require("./services/emailQueue.js").redis().ping();
-    await require("./services/emailService.js").ensureRedisQuotaState();
-    await require("./services/emailMonitoring.js").ensureIncidentPauses();
-  } else {
-    await require("./services/emailService.js").startWorkers();
-  }
   httpServer.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
@@ -369,19 +360,7 @@ const startServer = async () => {
 };
 
 startServer().catch((error) => {
-  // Startup failures can contain connection strings or provider responses.
-  // Do not print raw exception messages/stacks containing secret credentials.
-  console.error("Server startup failed:", error.code || "INITIALIZATION_ERROR");
+  console.error("❌ Server startup failed:", error.message);
+  if (error?.stack) console.error(error.stack);
   process.exit(1);
 });
-
-// Graceful queue shutdown: BullMQ resumes waiting jobs after process restart.
-for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.on(signal, async () => {
-    httpServer.close();
-    await require("./services/emailService.js").stopWorkers();
-    await require("./services/emailQueue.js").close();
-    await mongoose.disconnect();
-    process.exit(0);
-  });
-}

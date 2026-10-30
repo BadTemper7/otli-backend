@@ -207,55 +207,54 @@ const requestClientRegistrationOtp = async (req, res) => {
         });
     }
     const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
-    const uploadedDocs = await uploadRegistrationDocuments({
-        files: req.files,
-        clientId: reservedClientId,
-    });
     const otp = (0, generateOtp_js_1.generateOtp)();
-    const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    const passwordHash = await bcryptjs_1.default.hash(password, 10);
-    const registrationRecord = await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
-        clientId: reservedClientId,
-        companyName,
-        companyAddress,
-        companyType,
-        companyTypeOther: companyTypeOther || "",
-        companyMarket: "local",
-        phoneNumber,
-        representativeFirstName,
-        representativeMiddleName: representativeMiddleName || "",
-        representativeLastName,
-        representativePosition,
-        email: normalizedEmail,
-        password: passwordHash,
-        documents: uploadedDocs,
-        legalConsent: {
-            termsAccepted: true,
-            privacyAccepted: true,
-            representativeAuthorityConfirmed: true,
-            termsVersion: legalPolicies_js_1.TERMS_VERSION,
-            privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
-            acceptedAt: new Date(),
-            ipAddress: getRequestIpAddress(req),
-            userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
-        },
-        otpHash,
-        otpExpiresAt: getOtpExpiryDate(),
-        otpAttempts: 0,
-        otpLastSentAt: new Date(),
-    }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    await (0, mailer_js_1.sendEmail)({
+    await (0, mailer_js_1.sendRegistrationOtp)({
         to: normalizedEmail,
-        eventKey: `registration-otp:${reservedClientId}:${otpHash}`,
-        eventType: "otp",
-        expiresAt: getOtpExpiryDate(),
-        otpContext: { kind: "registration", id: String(registrationRecord._id), hash: otpHash },
-        subject: "OTLI Client Registration OTP",
         html: (0, emailTemplates_js_1.otpEmailTemplate)({
             title: "OTLI Client Registration",
             otp,
             message: "Use this OTP to verify your email and submit your client registration.",
         }),
+        prepare: async () => {
+            // Do not write files, consume CPU for hashing, or replace an OTP
+            // until the shared SMTP account has reserved a sending slot.
+            const uploadedDocs = await uploadRegistrationDocuments({
+                files: req.files,
+                clientId: reservedClientId,
+            });
+            const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
+            const passwordHash = await bcryptjs_1.default.hash(password, 10);
+            await PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+                clientId: reservedClientId,
+                companyName,
+                companyAddress,
+                companyType,
+                companyTypeOther: companyTypeOther || "",
+                companyMarket: "local",
+                phoneNumber,
+                representativeFirstName,
+                representativeMiddleName: representativeMiddleName || "",
+                representativeLastName,
+                representativePosition,
+                email: normalizedEmail,
+                password: passwordHash,
+                documents: uploadedDocs,
+                legalConsent: {
+                    termsAccepted: true,
+                    privacyAccepted: true,
+                    representativeAuthorityConfirmed: true,
+                    termsVersion: legalPolicies_js_1.TERMS_VERSION,
+                    privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
+                    acceptedAt: new Date(),
+                    ipAddress: getRequestIpAddress(req),
+                    userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
+                },
+                otpHash,
+                otpExpiresAt: getOtpExpiryDate(),
+                otpAttempts: 0,
+                otpLastSentAt: new Date(),
+            }, { upsert: true, new: true, setDefaultsOnInsert: true });
+        },
     });
     return res.json({ success: true, message: "OTP has been sent to your email." });
 };
@@ -283,23 +282,20 @@ const resendClientRegistrationOtp = async (req, res) => {
         });
     }
     const otp = (0, generateOtp_js_1.generateOtp)();
-    pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    pending.otpExpiresAt = getOtpExpiryDate();
-    pending.otpAttempts = 0;
-    pending.otpLastSentAt = new Date();
-    await pending.save();
-    await (0, mailer_js_1.sendEmail)({
+    await (0, mailer_js_1.sendRegistrationOtp)({
         to: normalizedEmail,
-        eventKey: `registration-otp:${pending._id}:${pending.otpHash}`,
-        eventType: "otp",
-        expiresAt: pending.otpExpiresAt,
-        otpContext: { kind: "registration", id: String(pending._id), hash: pending.otpHash },
-        subject: "OTLI Client Registration OTP",
         html: (0, emailTemplates_js_1.otpEmailTemplate)({
             title: "OTLI Client Registration",
             otp,
             message: "Use this new OTP to verify your email and submit your client registration.",
         }),
+        prepare: async () => {
+            pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
+            pending.otpExpiresAt = getOtpExpiryDate();
+            pending.otpAttempts = 0;
+            pending.otpLastSentAt = new Date();
+            await pending.save();
+        },
     });
     return res.json({ success: true, message: "A new OTP has been sent to your email." });
 };
@@ -377,75 +373,21 @@ const verifyClientRegistrationOtp = async (req, res) => {
     });
 };
 exports.verifyClientRegistrationOtp = verifyClientRegistrationOtp;
-const forgotPassword = async (req, res) => {
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ success: false, message: "Email is required." });
-    }
-    const user = await User_js_1.default.findOne({ email: email.toLowerCase().trim() }).select("+passwordResetOtpHash");
-    if (!user) {
-        return res.json({ success: true, message: "If the email exists, an OTP will be sent." });
-    }
-    if (!canResendOtp(user.passwordResetLastSentAt)) {
-        return res.status(429).json({
-            success: false,
-            message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
-        });
-    }
-    const otp = (0, generateOtp_js_1.generateOtp)();
-    user.passwordResetOtpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    user.passwordResetExpiresAt = getOtpExpiryDate();
-    user.passwordResetAttempts = 0;
-    user.passwordResetLastSentAt = new Date();
-    await user.save();
-    await (0, mailer_js_1.sendEmail)({
-        to: user.email,
-        eventKey: `password-reset-otp:${user._id}:${user.passwordResetOtpHash}`,
-        eventType: "otp",
-        expiresAt: user.passwordResetExpiresAt,
-        otpContext: { kind: "password_reset", id: String(user._id), hash: user.passwordResetOtpHash },
-        subject: "OTLI Password Reset OTP",
-        html: (0, emailTemplates_js_1.otpEmailTemplate)({
-            title: "OTLI Password Reset",
-            otp,
-            message: "Use this OTP to reset your OTLI account password.",
-        }),
+// Email is reserved solely for registration verification.
+// Keep the original routes to return a clear error instead of silently pretending
+// to send a password-reset email. Signed-in users can still change passwords.
+const forgotPassword = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Email password reset is disabled. Please contact support or change your password while signed in.",
     });
-    return res.json({ success: true, message: "If the email exists, an OTP will be sent." });
 };
 exports.forgotPassword = forgotPassword;
-const resetPassword = async (req, res) => {
-    const { email, otp, password, confirmPassword } = req.body;
-    if (!email || !otp || !password || !confirmPassword) {
-        return res.status(400).json({ success: false, message: "Email, OTP, password, and confirm password are required." });
-    }
-    if (password !== confirmPassword) {
-        return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
-    }
-    const user = await User_js_1.default.findOne({ email: email.toLowerCase().trim() }).select("+password +passwordResetOtpHash");
-    if (!user || !user.passwordResetOtpHash) {
-        return res.status(400).json({ success: false, message: "Invalid password reset request." });
-    }
-    if (!user.passwordResetExpiresAt || user.passwordResetExpiresAt < new Date()) {
-        return res.status(400).json({ success: false, message: "OTP has expired. Please request a new one." });
-    }
-    const maxAttempts = Number(process.env.EMAIL_OTP_MAX_ATTEMPTS || 5);
-    if (user.passwordResetAttempts >= maxAttempts) {
-        return res.status(429).json({ success: false, message: "Too many incorrect attempts. Please request a new OTP." });
-    }
-    const isValidOtp = await (0, generateOtp_js_1.compareOtp)(otp, user.passwordResetOtpHash);
-    if (!isValidOtp) {
-        user.passwordResetAttempts += 1;
-        await user.save();
-        return res.status(400).json({ success: false, message: "Invalid OTP." });
-    }
-    user.password = password;
-    user.passwordResetOtpHash = "";
-    user.passwordResetExpiresAt = null;
-    user.passwordResetAttempts = 0;
-    user.passwordResetLastSentAt = null;
-    await user.save();
-    return res.json({ success: true, message: "Password has been reset successfully." });
+const resetPassword = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Email password reset is disabled. Please contact support or change your password while signed in.",
+    });
 };
 exports.resetPassword = resetPassword;
 const resubmitRejectedClient = async (req, res) => {
@@ -532,36 +474,10 @@ const changePassword = async (req, res) => {
     return res.json({ success: true, message: "Password changed successfully." });
 };
 exports.changePassword = changePassword;
-const sendTestEmail = async (req, res) => {
-    if (process.env.NODE_ENV !== "development") {
-        return res.status(403).json({
-            success: false,
-            message: "Test email endpoint is only available in development.",
-        });
-    }
-    const { email } = req.body;
-    if (!email) {
-        return res.status(400).json({ success: false, message: "Email is required." });
-    }
-    await (0, mailer_js_1.verifyMailer)();
-    const info = await (0, mailer_js_1.sendEmail)({
-        to: email.toLowerCase().trim(),
-        eventKey: `development-smtp-test:${Date.now()}:${require("node:crypto").randomUUID()}`,
-        eventType: "test",
-        subject: "OTLI SMTP Test Email",
-        html: `
-      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111;">
-        <h2>OTLI SMTP Test</h2>
-        <p>If you received this email, Hostinger SMTP is working.</p>
-        <p>Sent at: ${new Date().toISOString()}</p>
-      </div>
-    `,
-        text: `OTLI SMTP Test. Sent at: ${new Date().toISOString()}`,
-    });
-    return res.json({
-        success: true,
-        message: "Test email was accepted by SMTP (not proof of inbox delivery).",
-        emailDebug: { status: info.status, messageId: info.messageId },
+const sendTestEmail = async (_req, res) => {
+    return res.status(410).json({
+        success: false,
+        message: "Test emails are disabled. Only registration verification emails are permitted.",
     });
 };
 exports.sendTestEmail = sendTestEmail;

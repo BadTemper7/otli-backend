@@ -31,7 +31,7 @@ const getModule = (path = "") => {
     return aliases[first] || first.replaceAll("-", " ");
 };
 const sanitizeBody = (body = {}) => {
-    const hidden = new Set(["password", "currentPassword", "newPassword", "confirmPassword", "token", "html", "text", "subject", "email", "messageId", "payload", "signature"]);
+    const hidden = new Set(["password", "currentPassword", "newPassword", "confirmPassword", "token"]);
     return Object.fromEntries(Object.entries(body || {}).filter(([key]) => !hidden.has(key)).slice(0, 30));
 };
 const auditAdminMutations = (req, res, next) => {
