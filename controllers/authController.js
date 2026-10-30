@@ -137,36 +137,53 @@ const uploadRegistrationDocuments = async ({ files, clientId }) => {
     return results.map((result) => result.value);
 };
 const login = async (req, res) => {
-    const { email, password, loginType } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ success: false, message: "Email and password are required." });
+    // Low-volume diagnostic only: no credentials, email, IP, or token logged.
+    // Requests taking >=1.5s identify whether lookup or bcrypt is the delay.
+    const started = process.hrtime.bigint();
+    let lookupMs = 0;
+    let verifyMs = 0;
+    try {
+        const { email, password, loginType } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ success: false, message: "Email and password are required." });
+        }
+        const lookupStart = process.hrtime.bigint();
+        const user = await User_js_1.default.findOne({ email: email.toLowerCase() }).select("+password");
+        lookupMs = Math.round(Number(process.hrtime.bigint() - lookupStart) / 1e6);
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Invalid email or password." });
+        }
+        if (loginType === "admin" && user.userType !== "admin") {
+            return res.status(403).json({ success: false, message: "This login page is for admin accounts only." });
+        }
+        if (loginType === "client" && user.userType !== "client") {
+            return res.status(403).json({ success: false, message: "This login page is for client accounts only." });
+        }
+        const clientLoginAllowedStatuses = ["active", "verified", "pending", "resubmitted", "rejected"];
+        const canLogin = user.userType === "admin" ? user.status === "active" : clientLoginAllowedStatuses.includes(user.status);
+        if (!canLogin) {
+            return res.status(403).json({ success: false, message: `Your account is ${user.status}.` });
+        }
+        const verifyStart = process.hrtime.bigint();
+        const isMatch = await user.matchPassword(password);
+        verifyMs = Math.round(Number(process.hrtime.bigint() - verifyStart) / 1e6);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: "Invalid email or password." });
+        }
+        const token = (0, jwt_js_1.generateToken)(user._id);
+        return res.json({
+            success: true,
+            message: "Login successful.",
+            token,
+            user: (0, exports.safeUser)(user),
+        });
     }
-    const user = await User_js_1.default.findOne({ email: email.toLowerCase() }).select("+password");
-    if (!user) {
-        return res.status(401).json({ success: false, message: "Invalid email or password." });
+    finally {
+        const totalMs = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
+        if (totalMs >= 1500) {
+            console.warn(`[auth] slow login requestId=${req.apiRequestId || "untracked"} lookupMs=${lookupMs} verifyMs=${verifyMs} totalMs=${totalMs}`);
+        }
     }
-    if (loginType === "admin" && user.userType !== "admin") {
-        return res.status(403).json({ success: false, message: "This login page is for admin accounts only." });
-    }
-    if (loginType === "client" && user.userType !== "client") {
-        return res.status(403).json({ success: false, message: "This login page is for client accounts only." });
-    }
-    const clientLoginAllowedStatuses = ["active", "verified", "pending", "resubmitted", "rejected"];
-    const canLogin = user.userType === "admin" ? user.status === "active" : clientLoginAllowedStatuses.includes(user.status);
-    if (!canLogin) {
-        return res.status(403).json({ success: false, message: `Your account is ${user.status}.` });
-    }
-    const isMatch = await user.matchPassword(password);
-    if (!isMatch) {
-        return res.status(401).json({ success: false, message: "Invalid email or password." });
-    }
-    const token = (0, jwt_js_1.generateToken)(user._id);
-    return res.json({
-        success: true,
-        message: "Login successful.",
-        token,
-        user: (0, exports.safeUser)(user),
-    });
 };
 exports.login = login;
 const me = async (req, res) => {
