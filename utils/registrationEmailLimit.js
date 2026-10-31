@@ -6,6 +6,9 @@
 const KEY = "registration-otp-smtp";
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Only reservations provably not handed to SMTP can ever be reclaimed.
+// The grace period protects a still-running request from administrator cleanup.
+const UNUSED_GRACE_MS = 15 * 60 * 1000;
 // Calendar-day reporting is separate from the *rolling* safety quota.
 // Hostinger's provider limit does not reset at Philippine midnight.
 const manilaCalendarDay = (timestampMs) => {
@@ -37,6 +40,22 @@ class RegistrationEmailLimitError extends Error {
 
 const isDuplicateKey = (error) => error?.code === 11000;
 const getCollection = (collection) => collection || require("mongoose").connection.db.collection("registration_email_limits");
+const recentStages = (doc, timestampMs) => Object.fromEntries(
+    Object.entries(doc?.reservationStages || {}).filter(([key, state]) =>
+        Number.isSafeInteger(Number(key)) && Number(key) > timestampMs - DAY_MS &&
+        ["unused", "smtp_started", "smtp_accepted", "smtp_rejected", "smtp_unconfirmed"].includes(state)),
+);
+const countUnused = (doc, timestampMs) => Object.entries(recentStages(doc, timestampMs))
+    .filter(([key, state]) => state === "unused" && Number(key) <= timestampMs - UNUSED_GRACE_MS)
+    .length;
+const updateWithVersion = (store, doc, set) => store.updateOne(
+    { _id: KEY, version: doc.version },
+    { $set: { ...set, updatedAt: new Date() }, $inc: { version: 1 } },
+);
+const createSlotStateError = () => Object.assign(
+    new Error("The OTP sending reservation is no longer available. Please start a new request or submit for manual review."),
+    { code: "REGISTRATION_SLOT_UNAVAILABLE", statusCode: 503 },
+);
 
 // The longest active window determines when a sending slot will truly be free.
 // This is also returned to the registration form so the user is not told to
@@ -112,6 +131,8 @@ const getRegistrationEmailUsage = async ({ collection, now = () => Date.now() } 
     const rollingByLocalDay = [...perLocalDay.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, used]) => ({ date, used }));
+    const stages = recentStages(record, timestampMs);
+    const unclassifiedReservations = status.recent.filter((stamp) => !stages[String(stamp)]).length;
     const firstRollingSlotAt = windows.day.remaining === 0 && status.recent.length
         ? new Date(status.recent[0] + DAY_MS).toISOString()
         : null;
@@ -124,6 +145,10 @@ const getRegistrationEmailUsage = async ({ collection, now = () => Date.now() } 
         windows,
         calendarToday,
         rollingByLocalDay,
+        reclaimableUnused: countUnused(record, timestampMs),
+        // Old reservations have no reliable evidence of SMTP acceptance/failure.
+        // They are intentionally never released by the admin action.
+        unclassifiedReservations,
         firstRollingSlotAt,
         quotaWindow: "rolling_24_hours",
         canSendNow: status.allowed,
@@ -151,10 +176,12 @@ const reserveRegistrationEmailSlot = async ({ collection, now = () => Date.now()
             });
         }
         const updated = [...status.recent, timestampMs].map((stamp) => new Date(stamp));
+        const token = String(timestampMs);
+        const stages = { ...recentStages(current, timestampMs), [token]: "unused" };
         if (!current) {
             try {
-                await store.insertOne({ _id: KEY, version: 1, reservations: updated, updatedAt: currentTime });
-                return true;
+                await store.insertOne({ _id: KEY, version: 1, reservations: updated, reservationStages: stages, updatedAt: currentTime });
+                return token;
             } catch (error) {
                 if (isDuplicateKey(error)) continue;
                 throw error;
@@ -162,11 +189,84 @@ const reserveRegistrationEmailSlot = async ({ collection, now = () => Date.now()
         }
         const result = await store.updateOne(
             { _id: KEY, version: current.version },
-            { $set: { reservations: updated, updatedAt: currentTime }, $inc: { version: 1 } },
+            { $set: { reservations: updated, reservationStages: stages, updatedAt: currentTime }, $inc: { version: 1 } },
         );
-        if (result.matchedCount === 1) return true;
+        if (result.matchedCount === 1) return token;
     }
     throw new RegistrationEmailLimitError({ name: "spacing", retryAfterSeconds: 12, message: "Concurrent registration email requests; retry shortly." });
+};
+
+// Atomic state transitions coordinate with a concurrent admin cleanup. A
+// reclaimed reservation can never be handed to SMTP after reconciliation.
+const transitionRegistrationEmailSlot = async ({ token, from, to, collection } = {}) => {
+    if (token === true) return true; // Compatibility with legacy mocked callers.
+    if (!/^\d{10,17}$/.test(String(token || ""))) throw createSlotStateError();
+    const store = getCollection(collection);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const doc = await store.findOne({ _id: KEY });
+        if (!doc || doc.reservationStages?.[token] !== from ||
+            !(doc.reservations || []).some((item) => new Date(item).getTime() === Number(token))) {
+            throw createSlotStateError();
+        }
+        const stages = { ...(doc.reservationStages || {}), [token]: to };
+        const result = await updateWithVersion(store, doc, { reservationStages: stages });
+        if (result.matchedCount === 1) return true;
+    }
+    throw createSlotStateError();
+};
+
+const startRegistrationEmailSend = (options) => transitionRegistrationEmailSlot({ ...options, from: "unused", to: "smtp_started" });
+const finishRegistrationEmailSend = async ({ outcome = "smtp_unconfirmed", ...options } = {}) => {
+    if (!["smtp_accepted", "smtp_rejected", "smtp_unconfirmed"].includes(outcome)) {
+        throw new Error("Invalid email outcome.");
+    }
+    return transitionRegistrationEmailSlot({ ...options, from: "smtp_started", to: outcome });
+};
+
+// Safe only BEFORE any attempt to contact SMTP. If the request fails before
+// startRegistrationEmailSend, this restores its slot immediately.
+const releaseUnstartedRegistrationEmailSlot = async ({ token, collection } = {}) => {
+    if (token === true) return false;
+    if (!/^\d{10,17}$/.test(String(token || ""))) return false;
+    const store = getCollection(collection);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const doc = await store.findOne({ _id: KEY });
+        if (!doc || doc.reservationStages?.[token] !== "unused") return false;
+        const stages = { ...(doc.reservationStages || {}) };
+        delete stages[token];
+        const reservations = (doc.reservations || []).filter((item) => new Date(item).getTime() !== Number(token));
+        const result = await updateWithVersion(store, doc, { reservations, reservationStages: stages });
+        if (result.matchedCount === 1) return true;
+    }
+    return false;
+};
+
+// Super-admin recovery removes ONLY the recorded unused pre-SMTP slots older
+// than 15 minutes. Unknown legacy slots and any SMTP-started job are preserved.
+// Optimistic locking makes this safe against simultaneous registrations/workers.
+const reconcileUnusedRegistrationEmailSlots = async ({ collection, now = () => Date.now() } = {}) => {
+    const store = getCollection(collection);
+    const timestampMs = Number(now());
+    if (!Number.isFinite(timestampMs)) throw new Error("Invalid clock.");
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const doc = await store.findOne({ _id: KEY });
+        if (!doc) return { released: 0, remaining: 0, legacyHeld: 0 };
+        const stages = recentStages(doc, timestampMs);
+        const targets = new Set(Object.entries(stages)
+            .filter(([key, state]) => state === "unused" && Number(key) <= timestampMs - UNUSED_GRACE_MS)
+            .map(([key]) => key));
+        if (targets.size === 0) {
+            const active = inspectRegistrationEmailLimit(doc.reservations, timestampMs).recent;
+            return { released: 0, remaining: active.length, legacyHeld: active.filter((stamp) => !stages[String(stamp)]).length };
+        }
+        const reservations = (doc.reservations || []).filter((item) => !targets.has(String(new Date(item).getTime())));
+        for (const key of targets) delete stages[key];
+        const result = await updateWithVersion(store, doc, { reservations, reservationStages: stages });
+        if (result.matchedCount !== 1) continue;
+        const active = inspectRegistrationEmailLimit(reservations, timestampMs).recent;
+        return { released: targets.size, remaining: active.length, legacyHeld: active.filter((stamp) => !stages[String(stamp)]).length };
+    }
+    throw Object.assign(new Error("Email slot reconciliation is busy. Please retry."), { statusCode: 503 });
 };
 
 module.exports = {
@@ -177,4 +277,9 @@ module.exports = {
     WINDOW_LIMITS,
     getRegistrationEmailUsage,
     manilaCalendarDay,
+    startRegistrationEmailSend,
+    finishRegistrationEmailSend,
+    releaseUnstartedRegistrationEmailSlot,
+    reconcileUnusedRegistrationEmailSlots,
+    UNUSED_GRACE_MS,
 };

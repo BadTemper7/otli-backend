@@ -131,7 +131,7 @@ test("registration limit: a stale CAS version cannot reserve an extra send", asy
 test("registration limit: no email address or OTP is stored", async () => {
     const collection = new MockCollection();
     await reserveRegistrationEmailSlot({ collection, now: () => 10_000_000 });
-    assert.deepEqual(Object.keys(collection.doc).sort(), ["_id", "reservations", "updatedAt", "version"].sort());
+    assert.deepEqual(Object.keys(collection.doc).sort(), ["_id", "reservationStages", "reservations", "updatedAt", "version"].sort());
     assert.equal(WINDOW_LIMITS.length, 4);
 });
 
@@ -145,7 +145,8 @@ test("email source: booking notifications stay in-app, with no SMTP", () => {
 test("email source: only two registration code paths send SMTP", () => {
     const auth = file("controllers/authController.js");
     const booking = file("controllers/bookingController.js");
-    assert.equal((auth.match(/sendRegistrationOtpEmail\)\(/g) || []).length, 2);
+    assert.equal((auth.match(/sendRegistrationOtpEmail\)\(/g) || []).length, 1);
+    assert.equal((auth.match(/sendTrackedRegistrationOtp\(req, res/g) || []).length, 2);
     assert.equal((auth.match(/allowRegistrationOtpEmail\(res, \{/g) || []).length, 2);
     assert.match(auth, /canResendOtp\(pending\.otpLastSentAt\)/);
     assert.doesNotMatch(booking, /sendRegistrationOtpEmail/);

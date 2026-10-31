@@ -258,8 +258,9 @@ const handleRegistrationEmailFailure = (error, res, { recipient, flow } = {}) =>
     });
 };
 
-// Reserve a shared sending slot BEFORE saving/updating a registration OTP.
-// When the SMTP account is at its limit, an existing valid OTP is not replaced.
+// The shared slot is reserved only once documents are safely saved and the
+// request is ready to prepare an OTP. No email slot is consumed by a failed
+// document upload. Unknown SMTP outcomes still retain the slot for safety.
 const replyRegistrationEmailLimit = (res, error) => {
     const retryAfterSeconds = Math.max(1, Number(error?.retryAfterSeconds) || 12);
     res.set("Retry-After", String(retryAfterSeconds));
@@ -283,15 +284,48 @@ const checkRegistrationEmailAvailability = async (_req, res) => {
 exports.checkRegistrationEmailAvailability = checkRegistrationEmailAvailability;
 const allowRegistrationOtpEmail = async (res, { recipient, flow }) => {
     try {
-        await (0, registrationEmailLimit_js_1.reserveRegistrationEmailSlot)();
+        const token = await (0, registrationEmailLimit_js_1.reserveRegistrationEmailSlot)();
         emailHistory.recordEmailEventSafely({ eventType: "reserved", flow, recipient });
-        return true;
+        return token;
     } catch (error) {
         if (error?.code !== "REGISTRATION_EMAIL_LIMIT") throw error;
         emailHistory.recordEmailEventSafely({ eventType: "rate_limited", flow });
         replyRegistrationEmailLimit(res, error);
         return false;
     }
+};
+// Fail closed if the shared DB cannot confirm the reservation is still safe.
+// Reconciliation can never release a slot after SMTP has started.
+const sendTrackedRegistrationOtp = async (req, res, { token, recipient, flow, otp, message }) => {
+    try {
+        await (0, registrationEmailLimit_js_1.startRegistrationEmailSend)({ token });
+    } catch (_error) {
+        await (0, registrationEmailLimit_js_1.releaseUnstartedRegistrationEmailSlot)({ token }).catch(() => undefined);
+        return res.status(503).json({
+            success: false,
+            code: "REGISTRATION_SLOT_UNAVAILABLE",
+            manualReviewAvailable: true,
+            message: "OTP sending is temporarily unavailable. Submit your registration for manual review instead.",
+        });
+    }
+    try {
+        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
+            to: recipient,
+            html: (0, emailTemplates_js_1.otpEmailTemplate)({
+                title: "OTLI Client Registration", otp, message,
+            }),
+        }));
+    } catch (error) {
+        await (0, registrationEmailLimit_js_1.finishRegistrationEmailSend)({
+            token, outcome: emailHistory.classifySmtpFailure(error),
+        }).catch(() => undefined);
+        return handleRegistrationEmailFailure(error, res, { recipient, flow });
+    }
+    await (0, registrationEmailLimit_js_1.finishRegistrationEmailSend)({
+        token, outcome: "smtp_accepted",
+    }).catch(() => console.warn("[registration] Could not persist SMTP slot outcome."));
+    emailHistory.recordEmailEventSafely({ eventType: "smtp_accepted", flow, recipient });
+    return res.json({ success: true, message: flow === "resend_otp" ? "A new OTP has been sent to your email." : "OTP has been sent to your email." });
 };
 const requestClientRegistrationOtp = async (req, res) => {
     const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
@@ -306,16 +340,30 @@ const requestClientRegistrationOtp = async (req, res) => {
     if (existingPending && !canResendOtp(existingPending.otpLastSentAt)) {
         return replyOtpResendCooldown(res, existingPending.otpLastSentAt);
     }
-    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "request_otp" })))) return;
     const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
     const uploadedDocs = await timeRegistrationStage(req, "saveFilesMs", () => uploadRegistrationDocuments({
         files: req.files,
         clientId: reservedClientId,
     }));
-    const otp = (0, generateOtp_js_1.generateOtp)();
-    const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    const passwordHash = await timeRegistrationStage(req, "hashPasswordMs", () => bcryptjs_1.default.hash(password, 10));
-    await timeRegistrationStage(req, "savePendingMs", () => PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
+    let token;
+    try {
+        token = await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "request_otp" }));
+    } catch (error) {
+        // On an unavailable limiter database, fail closed and do not strand
+        // registration documents saved just before the quota check.
+        await Promise.all(uploadedDocs.map((doc) => (0, localFileStorage_js_1.deleteLocalFile)(doc.publicId).catch(() => undefined)));
+        throw error;
+    }
+    if (!token) {
+        await Promise.all(uploadedDocs.map((doc) => (0, localFileStorage_js_1.deleteLocalFile)(doc.publicId).catch(() => undefined)));
+        return;
+    }
+    let otp;
+    try {
+        otp = (0, generateOtp_js_1.generateOtp)();
+        const otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
+        const passwordHash = await timeRegistrationStage(req, "hashPasswordMs", () => bcryptjs_1.default.hash(password, 10));
+        await timeRegistrationStage(req, "savePendingMs", () => PendingClient_js_1.default.findOneAndUpdate({ email: normalizedEmail }, {
         clientId: reservedClientId,
         companyName,
         companyAddress,
@@ -335,21 +383,17 @@ const requestClientRegistrationOtp = async (req, res) => {
         otpExpiresAt: getOtpExpiryDate(),
         otpAttempts: 0,
         otpLastSentAt: new Date(),
-    }, { upsert: true, new: true, setDefaultsOnInsert: true }));
-    try {
-        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
-            to: normalizedEmail,
-            html: (0, emailTemplates_js_1.otpEmailTemplate)({
-                title: "OTLI Client Registration",
-                otp,
-                message: "Use this OTP to verify your email and submit your client registration.",
-            }),
-        }));
+        }, { upsert: true, new: true, setDefaultsOnInsert: true }));
     } catch (error) {
-        return handleRegistrationEmailFailure(error, res, { recipient: normalizedEmail, flow: "request_otp" });
+        // SMTP has NOT started: restore the reserved slot, even after a DB or file failure.
+        await (0, registrationEmailLimit_js_1.releaseUnstartedRegistrationEmailSlot)({ token }).catch(() => undefined);
+        await Promise.all(uploadedDocs.map((doc) => (0, localFileStorage_js_1.deleteLocalFile)(doc.publicId).catch(() => undefined)));
+        throw error;
     }
-    emailHistory.recordEmailEventSafely({ eventType: "smtp_accepted", flow: "request_otp", recipient: normalizedEmail });
-    return res.json({ success: true, message: "OTP has been sent to your email." });
+    return sendTrackedRegistrationOtp(req, res, {
+        token, recipient: normalizedEmail, flow: "request_otp", otp,
+        message: "Use this OTP to verify your email and submit your client registration.",
+    });
 };
 exports.requestClientRegistrationOtp = requestClientRegistrationOtp;
 // Fallback for genuine applicants when the configured SMTP quota has been
@@ -435,27 +479,24 @@ const resendClientRegistrationOtp = async (req, res) => {
     if (!canResendOtp(pending.otpLastSentAt)) {
         return replyOtpResendCooldown(res, pending.otpLastSentAt);
     }
-    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "resend_otp" })))) return;
-    const otp = (0, generateOtp_js_1.generateOtp)();
-    pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
-    pending.otpExpiresAt = getOtpExpiryDate();
-    pending.otpAttempts = 0;
-    pending.otpLastSentAt = new Date();
-    await timeRegistrationStage(req, "savePendingMs", () => pending.save());
+    const token = await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "resend_otp" }));
+    if (!token) return;
+    let otp;
     try {
-        await timeRegistrationStage(req, "smtpMs", () => (0, mailer_js_1.sendRegistrationOtpEmail)({
-            to: normalizedEmail,
-            html: (0, emailTemplates_js_1.otpEmailTemplate)({
-                title: "OTLI Client Registration",
-                otp,
-                message: "Use this new OTP to verify your email and submit your client registration.",
-            }),
-        }));
+        otp = (0, generateOtp_js_1.generateOtp)();
+        pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
+        pending.otpExpiresAt = getOtpExpiryDate();
+        pending.otpAttempts = 0;
+        pending.otpLastSentAt = new Date();
+        await timeRegistrationStage(req, "savePendingMs", () => pending.save());
     } catch (error) {
-        return handleRegistrationEmailFailure(error, res, { recipient: normalizedEmail, flow: "resend_otp" });
+        await (0, registrationEmailLimit_js_1.releaseUnstartedRegistrationEmailSlot)({ token }).catch(() => undefined);
+        throw error;
     }
-    emailHistory.recordEmailEventSafely({ eventType: "smtp_accepted", flow: "resend_otp", recipient: normalizedEmail });
-    return res.json({ success: true, message: "A new OTP has been sent to your email." });
+    return sendTrackedRegistrationOtp(req, res, {
+        token, recipient: normalizedEmail, flow: "resend_otp", otp,
+        message: "Use this new OTP to verify your email and submit your client registration.",
+    });
 };
 exports.resendClientRegistrationOtp = resendClientRegistrationOtp;
 const verifyClientRegistrationOtp = async (req, res) => {

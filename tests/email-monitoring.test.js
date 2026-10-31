@@ -145,8 +145,9 @@ test("admin monitoring routes require reports:view, no mutation or email-sending
 
 test("registration OTP controller records reservation, accepted and failed paths; no extra email senders", () => {
   const auth = source("controllers/authController.js");
-  assert.equal((auth.match(/sendRegistrationOtpEmail\)\(/g) || []).length, 2);
-  assert.equal((auth.match(/eventType: "smtp_accepted"/g) || []).length, 2);
+  assert.equal((auth.match(/sendRegistrationOtpEmail\)\(/g) || []).length, 1);
+  assert.equal((auth.match(/sendTrackedRegistrationOtp\(req, res/g) || []).length, 2);
+  assert.equal((auth.match(/eventType: "smtp_accepted"/g) || []).length, 1);
   assert.match(auth, /eventType: "rate_limited"/);
   assert.match(auth, /emailHistory\.classifySmtpFailure/);
   assert.match(auth, /eventType: "reserved"/);

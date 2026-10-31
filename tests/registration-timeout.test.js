@@ -55,7 +55,12 @@ function makeController({ smtpFails = false, fileFails = false } = {}) {
             return { acceptedByProvider: true };
         } },
         "../utils/registrationEmailHistory.js": { recordEmailEventSafely() {}, classifySmtpFailure: () => "smtp_unconfirmed" },
-        "../utils/registrationEmailLimit.js": { reserveRegistrationEmailSlot: async () => { reservedSlots++; return true; } },
+        "../utils/registrationEmailLimit.js": {
+            reserveRegistrationEmailSlot: async () => { reservedSlots++; return true; },
+            startRegistrationEmailSend: async () => true,
+            finishRegistrationEmailSend: async () => true,
+            releaseUnstartedRegistrationEmailSlot: async () => true,
+        },
         "../utils/registrationTiming.js": timings,
         "../utils/generateOtp.js": { generateOtp: () => "123456", hashOtp: async () => "otpHash" },
         "../utils/jwt.js": {},
@@ -122,6 +127,7 @@ test("document failure cleans up successful writes before SMTP", async () => {
     assert.equal(metrics().deletedFiles, 2);
     assert.equal(metrics().sendCalls, 0);
     assert.equal(metrics().pendingWrites, 0);
+    assert.equal(metrics().reservedSlots, 0, "upload failures must no longer consume SMTP slots");
 });
 
 test("registration timing middleware records multipart upload and steps without PII", async () => {

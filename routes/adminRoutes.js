@@ -46,6 +46,11 @@ router.get(
   (0, asyncHandler_js_1.default)(emailUsageController.getEmailUsage),
 );
 // Protected date-filtered OTP history and streaming CSV export.
+router.post(
+  "/email-usage/reconcile",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(emailUsageController.reconcileEmailUsage),
+);
 router.get(
   "/email-monitoring",
   (0, authMiddleware_js_1.requirePermission)("reports", "view"),
