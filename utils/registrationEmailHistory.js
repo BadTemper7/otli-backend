@@ -123,12 +123,17 @@ const parseHistoryOptions = (params = {}, opts = {}) => {
     error.statusCode = 400;
     throw error;
   }
-  if (params.type && !EVENT_TYPES.includes(params.type)) {
+  // The Admin defaults to type=all. This is a filter sentinel, not an
+  // event type stored in MongoDB. Accept it for both report and CSV APIs.
+  const type = params.type === undefined || params.type === ""
+    ? "all"
+    : (typeof params.type === "string" ? params.type.trim().toLowerCase() : null);
+  if (type !== "all" && !EVENT_TYPES.includes(type)) {
     const error = new Error("Invalid email event filter.");
     error.statusCode = 400;
     throw error;
   }
-  return { ...range, page, limit, type: params.type || "all" };
+  return { ...range, page, limit, type };
 };
 
 const summarizeBuckets = (buckets) => {

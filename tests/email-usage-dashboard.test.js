@@ -119,3 +119,47 @@ test("email dashboard: endpoint requires existing admin and dashboard:view permi
   const server = source("server.js");
   assert.match(server, /adminRoutes/);
 });
+
+test("calendar Today count resets at Manila midnight but does not reset rolling quota", async () => {
+  const collection = new MockCollection();
+  const lastBeforeMidnight = Date.parse("2026-10-31T15:59:00.000Z"); // 11:59 PM PHT
+  for (let n = 0; n < 100; n += 1) {
+    await reserveRegistrationEmailSlot({ collection, now: () => lastBeforeMidnight - (99 - n) * 80_000 });
+  }
+  const before = await getRegistrationEmailUsage({ collection, now: () => lastBeforeMidnight + 1 });
+  assert.equal(before.calendarToday.date, "2026-10-31");
+  assert.equal(before.calendarToday.used, 100);
+  assert.equal(before.windows.day.used, 100);
+  const afterMidnight = Date.parse("2026-10-31T16:01:00.000Z"); // 12:01 AM Nov 1 PHT
+  const after = await getRegistrationEmailUsage({ collection, now: () => afterMidnight });
+  assert.equal(after.calendarToday.date, "2026-11-01");
+  assert.equal(after.calendarToday.used, 0);
+  assert.deepEqual(after.rollingByLocalDay, [{ date: "2026-10-31", used: 100 }]);
+  assert.equal(after.calendarToday.timezone, "Asia/Manila");
+  assert.equal(after.calendarToday.resetsAt, "2026-11-01T16:00:00.000Z");
+  assert.equal(after.windows.day.used, 100);
+  assert.equal(after.windows.day.remaining, 0);
+  assert.equal(after.quotaWindow, "rolling_24_hours");
+  assert.equal(after.canSendNow, false);
+  assert.ok(after.firstRollingSlotAt, "tell admins when a rolling slot returns");
+  assert.equal(after.nextAvailableAt, after.firstRollingSlotAt);
+  await assert.rejects(
+    reserveRegistrationEmailSlot({ collection, now: () => afterMidnight }),
+    (error) => error.code === "REGISTRATION_EMAIL_LIMIT" && error.limitName === "day",
+  );
+});
+
+test("calendar Today and rolling 24h count differ even when a slot is available", async () => {
+  const collection = new MockCollection();
+  const yesterdayPht = Date.parse("2026-10-31T15:58:00.000Z");
+  await reserveRegistrationEmailSlot({ collection, now: () => yesterdayPht });
+  const now = Date.parse("2026-10-31T16:10:00.000Z");
+  const usage = await getRegistrationEmailUsage({ collection, now: () => now });
+  assert.equal(usage.calendarToday.date, "2026-11-01");
+  assert.equal(usage.calendarToday.used, 0);
+  assert.equal(usage.windows.day.used, 1);
+  assert.deepEqual(usage.rollingByLocalDay, [{ date: "2026-10-31", used: 1 }]);
+  assert.equal(usage.windows.day.remaining, 99);
+  assert.equal(usage.firstRollingSlotAt, null);
+  assert.equal(usage.canSendNow, true);
+});

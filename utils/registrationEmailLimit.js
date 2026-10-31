@@ -4,6 +4,19 @@
 // bursts across Node workers. These caps are conservative until the actual
 // Hostinger plan's allowance is confirmed. Never raise them to evade quotas.
 const KEY = "registration-otp-smtp";
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Calendar-day reporting is separate from the *rolling* safety quota.
+// Hostinger's provider limit does not reset at Philippine midnight.
+const manilaCalendarDay = (timestampMs) => {
+    const localDayStartMs = Math.floor((timestampMs + MANILA_OFFSET_MS) / DAY_MS) * DAY_MS;
+    const startMs = localDayStartMs - MANILA_OFFSET_MS;
+    return {
+        date: new Date(localDayStartMs).toISOString().slice(0, 10),
+        startMs,
+        nextStartMs: startMs + DAY_MS,
+    };
+};
 const WINDOW_LIMITS = [
     { name: "spacing", durationMs: 12 * 1000, max: 1 },
     { name: "minute", durationMs: 60 * 1000, max: 5 },
@@ -80,6 +93,28 @@ const getRegistrationEmailUsage = async ({ collection, now = () => Date.now() } 
             durationSeconds: window.durationMs / 1000,
         };
     }
+    const localDay = manilaCalendarDay(timestampMs);
+    // Today resets at 00:00 Asia/Manila for reporting only. Do NOT use this
+    // count to allow SMTP sends: Hostinger's quota is rolling 24 hours.
+    const calendarToday = {
+        date: localDay.date,
+        timezone: "Asia/Manila",
+        used: status.recent.filter((stamp) => stamp >= localDay.startMs && stamp <= timestampMs).length,
+        resetsAt: new Date(localDay.nextStartMs).toISOString(),
+    };
+    // Explain a full rolling window that spans two Philippine calendar dates
+    // without collecting or returning email addresses.
+    const perLocalDay = new Map();
+    for (const stamp of status.recent) {
+        const localDate = manilaCalendarDay(stamp).date;
+        perLocalDay.set(localDate, (perLocalDay.get(localDate) || 0) + 1);
+    }
+    const rollingByLocalDay = [...perLocalDay.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, used]) => ({ date, used }));
+    const firstRollingSlotAt = windows.day.remaining === 0 && status.recent.length
+        ? new Date(status.recent[0] + DAY_MS).toISOString()
+        : null;
     return {
         channel: "registration_otp",
         mailbox: process.env.SMTP_USER || null,
@@ -87,6 +122,10 @@ const getRegistrationEmailUsage = async ({ collection, now = () => Date.now() } 
         providerQuotaVerified: false,
         providerRemaining: null,
         windows,
+        calendarToday,
+        rollingByLocalDay,
+        firstRollingSlotAt,
+        quotaWindow: "rolling_24_hours",
         canSendNow: status.allowed,
         blockingWindow: status.limitName,
         retryAfterSeconds: status.retryAfterSeconds,
@@ -106,7 +145,10 @@ const reserveRegistrationEmailSlot = async ({ collection, now = () => Date.now()
         const currentTime = new Date(timestampMs);
         const status = inspectRegistrationEmailLimit(current?.reservations, timestampMs);
         if (!status.allowed) {
-            throw new RegistrationEmailLimitError(status);
+            throw new RegistrationEmailLimitError({
+                name: status.limitName || "spacing",
+                retryAfterSeconds: status.retryAfterSeconds,
+            });
         }
         const updated = [...status.recent, timestampMs].map((stamp) => new Date(stamp));
         if (!current) {
@@ -134,4 +176,5 @@ module.exports = {
     RegistrationEmailLimitError,
     WINDOW_LIMITS,
     getRegistrationEmailUsage,
+    manilaCalendarDay,
 };

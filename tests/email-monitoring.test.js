@@ -163,3 +163,26 @@ test("history totals have separate definite rejection and unconfirmed categories
   assert.equal(summary.unconfirmed, 3);
   assert.equal(summary.attempted, 10);
 });
+
+test("regression: admin's exact type=all query and CSV filter are supported", async () => {
+  const query = Object.fromEntries(new URLSearchParams("from=2026-10-31&to=2026-10-31&type=all&page=1&limit=25"));
+  assert.equal(parseHistoryOptions(query).type, "all");
+  assert.equal(parseHistoryOptions({ ...query, type: " ALL " }).type, "all");
+  assert.equal(parseHistoryOptions({ ...query, type: "" }).type, "all");
+  assert.equal(parseHistoryOptions({ ...query, type: "smtp_accepted" }).type, "smtp_accepted");
+  assert.equal(parseHistoryOptions({ from: query.from, to: query.to }).type, "all");
+  assert.throws(() => parseHistoryOptions({ ...query, type: ["all"] }), /Invalid email event filter/);
+
+  const collection = new FakeEvents();
+  const now = () => Date.parse("2026-10-31T06:00:00.000Z");
+  await recordRegistrationEmailEvent({ collection, eventType: "reserved", recipient: "x@example.test", now });
+  await recordRegistrationEmailEvent({ collection, eventType: "smtp_accepted", recipient: "x@example.test", now });
+  const all = await getEmailMonitoringReport({ collection, params: query });
+  assert.equal(all.summary.attempted, 1);
+  assert.equal(all.summary.accepted, 1);
+  assert.equal(all.history.totalRecords, 2);
+  const accepted = await getEmailMonitoringReport({ collection, params: { ...query, type: "smtp_accepted" } });
+  assert.equal(accepted.history.totalRecords, 1);
+  // Both summary cards stay unfiltered, as designed.
+  assert.equal(accepted.summary.attempted, 1);
+});
