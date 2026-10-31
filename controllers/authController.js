@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.resubmitRejectedClient = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
+exports.checkRegistrationEmailAvailability = exports.submitClientManualRegistration = exports.sendTestEmail = exports.changePassword = exports.resetPassword = exports.forgotPassword = exports.resubmitRejectedClient = exports.verifyClientRegistrationOtp = exports.resendClientRegistrationOtp = exports.requestClientRegistrationOtp = exports.me = exports.login = exports.safeUser = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const User_js_1 = __importDefault(require("../models/User.js"));
@@ -12,6 +12,7 @@ const PendingClient_js_1 = __importDefault(require("../models/PendingClient.js")
 const localFileStorage_js_1 = require("../utils/localFileStorage.js");
 const mailer_js_1 = require("../config/mailer.js");
 const registrationEmailLimit_js_1 = require("../utils/registrationEmailLimit.js");
+const emailHistory = require("../utils/registrationEmailHistory.js");
 const generateOtp_js_1 = require("../utils/generateOtp.js");
 const jwt_js_1 = require("../utils/jwt.js");
 const emailTemplates_js_1 = require("../utils/emailTemplates.js");
@@ -27,6 +28,39 @@ const documentLabels = {
     otherDocument: "Other Document",
 };
 const requiredDocumentFields = ["businessPermit", "birCertificate", "validId"];
+const getRegistrationValidationError = (req) => {
+    const { companyName, companyAddress, companyType, phoneNumber, representativeFirstName,
+        representativeLastName, representativePosition, email, password, confirmPassword,
+        termsAccepted, privacyAccepted, representativeAuthorityConfirmed } = req.body || {};
+    if ([companyName, companyAddress, companyType, phoneNumber, representativeFirstName,
+        representativeLastName, representativePosition, email, password, confirmPassword]
+        .some((value) => !String(value || "").trim())) {
+        return "Please complete all required fields.";
+    }
+    if (password !== confirmPassword) return "Password and confirm password do not match.";
+    if (String(password).length < 8) return "Password must be at least 8 characters.";
+    if (!isAffirmativeConsent(termsAccepted) || !isAffirmativeConsent(privacyAccepted) ||
+        !isAffirmativeConsent(representativeAuthorityConfirmed)) {
+        return "You must accept the Terms and Conditions, consent to the Privacy Policy, and confirm your authority to register the company.";
+    }
+    const missing = requiredDocumentFields.filter((name) => !req.files?.[name]?.[0]);
+    if (missing.length) return `Missing required documents: ${missing.map((name) => documentLabels[name]).join(", ")}.`;
+    if (typeof email !== "string" || !/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email.trim())) {
+        return "Please provide a valid email address.";
+    }
+    return null;
+};
+const getRegistrationLegalConsent = (req) => ({
+    termsAccepted: true,
+    privacyAccepted: true,
+    representativeAuthorityConfirmed: true,
+    termsVersion: legalPolicies_js_1.TERMS_VERSION,
+    privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
+    acceptedAt: new Date(),
+    ipAddress: getRequestIpAddress(req),
+    userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
+});
+
 const isAffirmativeConsent = (value) => ["true", "1", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 const getRequestIpAddress = (req) => {
     const forwarded = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
@@ -40,12 +74,22 @@ const getOtpExpiryDate = () => {
     const minutes = Number(process.env.EMAIL_OTP_EXPIRES_MINUTES || 10);
     return new Date(Date.now() + minutes * 60 * 1000);
 };
-const canResendOtp = (lastSentAt) => {
-    if (!lastSentAt)
-        return true;
+const otpResendWaitSeconds = (lastSentAt) => {
+    if (!lastSentAt) return 0;
     const resendSeconds = Number(process.env.EMAIL_OTP_RESEND_SECONDS || 60);
-    const diffMs = Date.now() - new Date(lastSentAt).getTime();
-    return diffMs >= resendSeconds * 1000;
+    const elapsed = Date.now() - new Date(lastSentAt).getTime();
+    return Math.max(0, Math.ceil((resendSeconds * 1000 - elapsed) / 1000));
+};
+const canResendOtp = (lastSentAt) => otpResendWaitSeconds(lastSentAt) === 0;
+const replyOtpResendCooldown = (res, lastSentAt) => {
+    const retryAfterSeconds = otpResendWaitSeconds(lastSentAt) || 1;
+    res.set("Retry-After", String(retryAfterSeconds));
+    return res.status(429).json({
+        success: false,
+        code: "REGISTRATION_OTP_RESEND_COOLDOWN",
+        retryAfterSeconds,
+        message: `An OTP was recently requested. Please wait ${retryAfterSeconds} seconds or use the code you already received.`,
+    });
 };
 const getRepresentativeName = (user) => {
     const parts = [user.representativeFirstName, user.representativeMiddleName, user.representativeLastName]
@@ -83,6 +127,8 @@ const safeUser = (user) => {
         resubmittedAt: user.resubmittedAt,
         status: user.status,
         isEmailVerified: user.isEmailVerified,
+        registrationMethod: user.registrationMethod || "email_otp",
+        manualVerifiedAt: user.manualVerifiedAt || null,
         legalConsent: user.legalConsent ? {
             termsAccepted: Boolean(user.legalConsent.termsAccepted),
             privacyAccepted: Boolean(user.legalConsent.privacyAccepted),
@@ -136,6 +182,7 @@ const uploadRegistrationDocuments = async ({ files, clientId }) => {
     }
     return results.map((result) => result.value);
 };
+exports.uploadRegistrationDocuments = uploadRegistrationDocuments;
 const login = async (req, res) => {
     // Low-volume diagnostic only: no credentials, email, IP, or token logged.
     // Requests taking >=1.5s identify whether lookup or bcrypt is the delay.
@@ -193,7 +240,11 @@ exports.me = me;
 // A stalled SMTP connection must not leave the registration page waiting for
 // the provider indefinitely. We never retry an uncertain SMTP send automatically
 // (it might have been accepted before the connection failed).
-const handleRegistrationEmailFailure = (error, res) => {
+const handleRegistrationEmailFailure = (error, res, { recipient, flow } = {}) => {
+    emailHistory.recordEmailEventSafely({
+        eventType: emailHistory.classifySmtpFailure(error),
+        recipient, flow, errorCode: error?.code,
+    });
     const code = String(error?.code || "SMTP_ERROR");
     const safeCode = /^(E[A-Z_]{1,30}|SMTP_ERROR)$/.test(code) ? code : "SMTP_ERROR";
     console.warn(`[registration] OTP SMTP send not confirmed code=${safeCode}`);
@@ -209,56 +260,43 @@ const handleRegistrationEmailFailure = (error, res) => {
 
 // Reserve a shared sending slot BEFORE saving/updating a registration OTP.
 // When the SMTP account is at its limit, an existing valid OTP is not replaced.
-const allowRegistrationOtpEmail = async (res) => {
+const replyRegistrationEmailLimit = (res, error) => {
+    const retryAfterSeconds = Math.max(1, Number(error?.retryAfterSeconds) || 12);
+    res.set("Retry-After", String(retryAfterSeconds));
+    res.set("Cache-Control", "no-store");
+    return res.status(429).json({
+        success: false,
+        code: "REGISTRATION_EMAIL_LIMIT",
+        retryAfterSeconds,
+        manualReviewAvailable: true,
+        message: retryAfterSeconds >= 3600
+            ? "Registration email quota is temporarily full. You can submit for manual review now or try OTP later."
+            : `Registration email service is busy. Try sending an OTP again in ${retryAfterSeconds} seconds, or submit for manual review.`,
+    });
+};
+const checkRegistrationEmailAvailability = async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    const status = await (0, registrationEmailLimit_js_1.getRegistrationEmailStatus)();
+    if (!status.allowed) return replyRegistrationEmailLimit(res, status);
+    return res.json({ success: true, available: true });
+};
+exports.checkRegistrationEmailAvailability = checkRegistrationEmailAvailability;
+const allowRegistrationOtpEmail = async (res, { recipient, flow }) => {
     try {
         await (0, registrationEmailLimit_js_1.reserveRegistrationEmailSlot)();
+        emailHistory.recordEmailEventSafely({ eventType: "reserved", flow, recipient });
         return true;
-    }
-    catch (error) {
+    } catch (error) {
         if (error?.code !== "REGISTRATION_EMAIL_LIMIT") throw error;
-        res.status(429).json({
-            success: false,
-            message: "Registration email sending is temporarily limited. Please try again later.",
-        });
+        emailHistory.recordEmailEventSafely({ eventType: "rate_limited", flow });
+        replyRegistrationEmailLimit(res, error);
         return false;
     }
 };
 const requestClientRegistrationOtp = async (req, res) => {
     const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber, representativeFirstName, representativeMiddleName, representativeLastName, representativePosition, email, password, confirmPassword, termsAccepted, privacyAccepted, representativeAuthorityConfirmed, } = req.body;
-    const requiredFields = [
-        companyName,
-        companyAddress,
-        companyType,
-        phoneNumber,
-        representativeFirstName,
-        representativeLastName,
-        representativePosition,
-        email,
-        password,
-        confirmPassword,
-    ];
-    if (requiredFields.some((value) => !String(value || "").trim())) {
-        return res.status(400).json({ success: false, message: "Please complete all required fields." });
-    }
-    if (password !== confirmPassword) {
-        return res.status(400).json({ success: false, message: "Password and confirm password do not match." });
-    }
-    if (!isAffirmativeConsent(termsAccepted) || !isAffirmativeConsent(privacyAccepted) || !isAffirmativeConsent(representativeAuthorityConfirmed)) {
-        return res.status(400).json({
-            success: false,
-            message: "You must accept the Terms and Conditions, consent to the Privacy Policy, and confirm your authority to register the company.",
-        });
-    }
-    const missingDocuments = requiredDocumentFields.filter((fieldName) => !req.files?.[fieldName]?.[0]);
-    if (missingDocuments.length) {
-        return res.status(400).json({
-            success: false,
-            message: `Missing required documents: ${missingDocuments.map((field) => documentLabels[field]).join(", ")}.`,
-        });
-    }
-    if (typeof email !== "string" || !/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email.trim())) {
-        return res.status(400).json({ success: false, message: "Please provide a valid email address." });
-    }
+    const validationError = getRegistrationValidationError(req);
+    if (validationError) return res.status(400).json({ success: false, message: validationError });
     const normalizedEmail = email.toLowerCase().trim();
     const existingUser = await timeRegistrationStage(req, "userLookupMs", () => User_js_1.default.findOne({ email: normalizedEmail }));
     if (existingUser) {
@@ -266,12 +304,9 @@ const requestClientRegistrationOtp = async (req, res) => {
     }
     const existingPending = await timeRegistrationStage(req, "pendingLookupMs", () => PendingClient_js_1.default.findOne({ email: normalizedEmail }).select("+otpHash"));
     if (existingPending && !canResendOtp(existingPending.otpLastSentAt)) {
-        return res.status(429).json({
-            success: false,
-            message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
-        });
+        return replyOtpResendCooldown(res, existingPending.otpLastSentAt);
     }
-    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "request_otp" })))) return;
     const reservedClientId = existingPending?.clientId || new mongoose_1.default.Types.ObjectId();
     const uploadedDocs = await timeRegistrationStage(req, "saveFilesMs", () => uploadRegistrationDocuments({
         files: req.files,
@@ -295,16 +330,7 @@ const requestClientRegistrationOtp = async (req, res) => {
         email: normalizedEmail,
         password: passwordHash,
         documents: uploadedDocs,
-        legalConsent: {
-            termsAccepted: true,
-            privacyAccepted: true,
-            representativeAuthorityConfirmed: true,
-            termsVersion: legalPolicies_js_1.TERMS_VERSION,
-            privacyPolicyVersion: legalPolicies_js_1.PRIVACY_POLICY_VERSION,
-            acceptedAt: new Date(),
-            ipAddress: getRequestIpAddress(req),
-            userAgent: String(req.headers?.["user-agent"] || "").slice(0, 500),
-        },
+        legalConsent: getRegistrationLegalConsent(req),
         otpHash,
         otpExpiresAt: getOtpExpiryDate(),
         otpAttempts: 0,
@@ -320,11 +346,73 @@ const requestClientRegistrationOtp = async (req, res) => {
             }),
         }));
     } catch (error) {
-        return handleRegistrationEmailFailure(error, res);
+        return handleRegistrationEmailFailure(error, res, { recipient: normalizedEmail, flow: "request_otp" });
     }
+    emailHistory.recordEmailEventSafely({ eventType: "smtp_accepted", flow: "request_otp", recipient: normalizedEmail });
     return res.json({ success: true, message: "OTP has been sent to your email." });
 };
 exports.requestClientRegistrationOtp = requestClientRegistrationOtp;
+// Fallback for genuine applicants when the configured SMTP quota has been
+// exhausted. No email is sent and email ownership is NOT marked verified.
+// Applicant remains pending until a human administrator reviews the documents.
+const submitClientManualRegistration = async (req, res) => {
+    const validationError = getRegistrationValidationError(req);
+    if (validationError) return res.status(400).json({ success: false, message: validationError });
+    const normalizedEmail = req.body.email.toLowerCase().trim();
+    if (await User_js_1.default.exists({ email: normalizedEmail })) {
+        return res.status(409).json({ success: false, message: "Email is already registered. Please sign in or contact support." });
+    }
+    const pending = await PendingClient_js_1.default.findOne({ email: normalizedEmail });
+    const clientId = pending?.clientId || new mongoose_1.default.Types.ObjectId();
+    const uploadedDocs = await uploadRegistrationDocuments({ files: req.files, clientId });
+    const { companyName, companyAddress, companyType, companyTypeOther, phoneNumber,
+        representativeFirstName, representativeMiddleName, representativeLastName,
+        representativePosition, password } = req.body;
+    let user;
+    try {
+        user = await User_js_1.default.create({
+            _id: clientId,
+            name: `${representativeFirstName} ${representativeLastName}`.trim(),
+            email: normalizedEmail,
+            password,
+            userType: "client",
+            role: "client",
+            registrationMethod: "manual_review",
+            companyName, companyAddress, companyType,
+            companyTypeOther: companyTypeOther || "",
+            companyMarket: "local",
+            phoneNumber, representativeFirstName,
+            representativeMiddleName: representativeMiddleName || "",
+            representativeLastName, representativePosition,
+            documents: uploadedDocs,
+            legalConsent: getRegistrationLegalConsent(req),
+            status: "pending",
+            isEmailVerified: false,
+        });
+    } catch (error) {
+        await Promise.all(uploadedDocs.map((doc) => (0, localFileStorage_js_1.deleteLocalFile)(doc.publicId).catch(() => undefined)));
+        if (error?.code === 11000) return res.status(409).json({ success: false, message: "Email is already registered." });
+        throw error;
+    }
+    if (pending) {
+        await PendingClient_js_1.default.deleteOne({ _id: pending._id }).catch(() => undefined);
+        const unusedFiles = (pending.documents || []).filter((old) => !uploadedDocs.some((doc) => doc.publicId === old.publicId));
+        await Promise.all(unusedFiles.map((doc) => (0, localFileStorage_js_1.deleteLocalFile)(doc.publicId).catch(() => undefined)));
+    }
+    const payload = (0, exports.safeUser)(user);
+    (0, socket_js_1.emitToAdmins)("client:registered", {
+        id: user._id, name: getRepresentativeName(user), email: user.email,
+        companyName: user.companyName, status: "pending", createdAt: user.createdAt,
+    });
+    const token = (0, jwt_js_1.generateToken)(user._id);
+    return res.status(201).json({
+        success: true,
+        message: "Registration submitted for manual review. No email OTP was sent. Your account cannot use booking services until an administrator verifies your details.",
+        token,
+        user: payload,
+    });
+};
+exports.submitClientManualRegistration = submitClientManualRegistration;
 const resendClientRegistrationOtp = async (req, res) => {
     const { email } = req.body;
     if (!email) {
@@ -345,12 +433,9 @@ const resendClientRegistrationOtp = async (req, res) => {
         });
     }
     if (!canResendOtp(pending.otpLastSentAt)) {
-        return res.status(429).json({
-            success: false,
-            message: `Please wait ${process.env.EMAIL_OTP_RESEND_SECONDS || 60} seconds before requesting another OTP.`,
-        });
+        return replyOtpResendCooldown(res, pending.otpLastSentAt);
     }
-    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res)))) return;
+    if (!(await timeRegistrationStage(req, "limitMs", () => allowRegistrationOtpEmail(res, { recipient: normalizedEmail, flow: "resend_otp" })))) return;
     const otp = (0, generateOtp_js_1.generateOtp)();
     pending.otpHash = await (0, generateOtp_js_1.hashOtp)(otp);
     pending.otpExpiresAt = getOtpExpiryDate();
@@ -367,8 +452,9 @@ const resendClientRegistrationOtp = async (req, res) => {
             }),
         }));
     } catch (error) {
-        return handleRegistrationEmailFailure(error, res);
+        return handleRegistrationEmailFailure(error, res, { recipient: normalizedEmail, flow: "resend_otp" });
     }
+    emailHistory.recordEmailEventSafely({ eventType: "smtp_accepted", flow: "resend_otp", recipient: normalizedEmail });
     return res.json({ success: true, message: "A new OTP has been sent to your email." });
 };
 exports.resendClientRegistrationOtp = resendClientRegistrationOtp;
@@ -423,6 +509,7 @@ const verifyClientRegistrationOtp = async (req, res) => {
         legalConsent: pending.legalConsent,
         status: defaultClientStatus,
         isEmailVerified: true,
+        registrationMethod: "email_otp",
     });
     await PendingClient_js_1.default.deleteOne({ _id: pending._id });
     (0, socket_js_1.emitToAdmins)("client:registered", {

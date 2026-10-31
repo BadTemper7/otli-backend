@@ -146,7 +146,7 @@ test("email source: only two registration code paths send SMTP", () => {
     const auth = file("controllers/authController.js");
     const booking = file("controllers/bookingController.js");
     assert.equal((auth.match(/sendRegistrationOtpEmail\)\(/g) || []).length, 2);
-    assert.equal((auth.match(/allowRegistrationOtpEmail\(res\)/g) || []).length, 2);
+    assert.equal((auth.match(/allowRegistrationOtpEmail\(res, \{/g) || []).length, 2);
     assert.match(auth, /canResendOtp\(pending\.otpLastSentAt\)/);
     assert.doesNotMatch(booking, /sendRegistrationOtpEmail/);
 });

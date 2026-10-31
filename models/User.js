@@ -62,6 +62,9 @@ const userSchema = new mongoose_1.default.Schema({
         default: "active",
     },
     isEmailVerified: { type: Boolean, default: false },
+    registrationMethod: { type: String, enum: ["email_otp", "manual_review", "admin"], default: "email_otp" },
+    manualVerifiedAt: { type: Date, default: null },
+    manuallyVerifiedBy: { type: mongoose_1.default.Schema.Types.ObjectId, ref: "User", default: null },
     isLockedSeed: { type: Boolean, default: false },
     permissions: {
         dashboard: { type: permissionsSchema, default: () => ({ view: false, create: false, edit: false, delete: false }) },

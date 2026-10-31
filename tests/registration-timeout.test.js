@@ -54,6 +54,7 @@ function makeController({ smtpFails = false, fileFails = false } = {}) {
             if (smtpFails) throw Object.assign(new Error("socket timeout (test)"), { code: "ETIMEDOUT" });
             return { acceptedByProvider: true };
         } },
+        "../utils/registrationEmailHistory.js": { recordEmailEventSafely() {}, classifySmtpFailure: () => "smtp_unconfirmed" },
         "../utils/registrationEmailLimit.js": { reserveRegistrationEmailSlot: async () => { reservedSlots++; return true; } },
         "../utils/registrationTiming.js": timings,
         "../utils/generateOtp.js": { generateOtp: () => "123456", hashOtp: async () => "otpHash" },

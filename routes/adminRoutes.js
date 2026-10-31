@@ -23,6 +23,8 @@ const auditController_js_1 = require("../controllers/auditController.js");
 const transactionController_js_1 = require("../controllers/transactionController.js");
 const moduleDataController_js_1 = require("../controllers/moduleDataController.js");
 const storageMonitoringController = require("../controllers/storageMonitoringController.js");
+const emailUsageController = require("../controllers/emailUsageController.js");
+const emailMonitoringController = require("../controllers/emailMonitoringController.js");
 const router = express_1.default.Router();
 router.use(authMiddleware_js_1.protect, authMiddleware_js_1.adminOnly);
 router.use(auditMiddleware_js_1.auditAdminMutations);
@@ -35,6 +37,24 @@ router.get(
   "/payments/history",
   (0, authMiddleware_js_1.requirePermission)("billing", "view"),
   (0, asyncHandler_js_1.default)(transactionController_js_1.listPaymentHistory),
+);
+// Lightweight, read-only OTP quota summary. Shares the dashboard view
+// permission and never discloses SMTP passwords or other credentials.
+router.get(
+  "/email-usage",
+  (0, authMiddleware_js_1.requireAnyPermission)([["dashboard", "view"], ["reports", "view"]]),
+  (0, asyncHandler_js_1.default)(emailUsageController.getEmailUsage),
+);
+// Protected date-filtered OTP history and streaming CSV export.
+router.get(
+  "/email-monitoring",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(emailMonitoringController.listEmailHistory),
+);
+router.get(
+  "/email-monitoring/export",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(emailMonitoringController.exportEmailHistory),
 );
 router.get(
   "/dashboard",
@@ -70,6 +90,12 @@ router.delete(
   "/users/:id",
   authMiddleware_js_1.superAdminOnly,
   (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser),
+);
+router.post(
+  "/clients",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "create"),
+  uploadMiddleware_js_1.clientRegistrationUpload,
+  (0, asyncHandler_js_1.default)(adminController_js_1.createClient),
 );
 router.patch(
   "/clients/:id/approve",

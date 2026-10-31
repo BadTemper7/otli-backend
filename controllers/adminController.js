@@ -3,8 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.rejectClient = exports.approveClient = exports.deleteUser = exports.updateUser = exports.createAdminUser = exports.getUserById = exports.listClients = exports.listUsers = void 0;
+exports.createClient = exports.rejectClient = exports.approveClient = exports.deleteUser = exports.updateUser = exports.createAdminUser = exports.getUserById = exports.listClients = exports.listUsers = void 0;
 const User_js_1 = __importDefault(require("../models/User.js"));
+const PendingClient_js_1 = __importDefault(require("../models/PendingClient.js"));
+const mongoose = require("mongoose");
+const { deleteLocalFile } = require("../utils/localFileStorage.js");
+
 const authController_js_1 = require("./authController.js");
 const socket_js_1 = require("../socket/socket.js");
 const permissions_js_1 = require("../utils/permissions.js");
@@ -52,6 +56,76 @@ const getUserById = async (req, res) => {
     return res.json({ success: true, user: (0, authController_js_1.safeUser)(user) });
 };
 exports.getUserById = getUserById;
+// Administrator-assisted client onboarding; no OTP or any other email.
+// Staff cannot activate or mark the email as verified through this endpoint.
+const createClient = async (req, res) => {
+    const body = req.body || {};
+    const requiredFields = ["companyName", "companyAddress", "companyType", "phoneNumber",
+        "representativeFirstName", "representativeLastName", "representativePosition", "email", "password"];
+    if (requiredFields.some((field) => !String(body[field] || "").trim())) {
+        return res.status(400).json({ success: false, message: "Complete all required client details and the initial password." });
+    }
+    const email = String(body.email).trim().toLowerCase();
+    if (!/^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/.test(email)) {
+        return res.status(400).json({ success: false, message: "Enter a valid email address." });
+    }
+    if (String(body.password).length < 8) {
+        return res.status(400).json({ success: false, message: "Initial password must contain at least 8 characters." });
+    }
+    const requiredDocuments = ["businessPermit", "birCertificate", "validId"];
+    if (requiredDocuments.some((field) => !req.files?.[field]?.[0])) {
+        return res.status(400).json({ success: false, message: "Business Permit, BIR Certificate and Valid ID are required for admin-created clients." });
+    }
+    if (await User_js_1.default.exists({ email })) {
+        return res.status(409).json({ success: false, message: "Client email already exists." });
+    }
+    const pending = await PendingClient_js_1.default.findOne({ email });
+    const clientId = pending?.clientId || new mongoose.Types.ObjectId();
+    const documents = await (0, authController_js_1.uploadRegistrationDocuments)({ files: req.files, clientId });
+    let user;
+    try {
+        user = await User_js_1.default.create({
+            _id: clientId,
+            name: `${body.representativeFirstName} ${body.representativeLastName}`.trim(),
+            email, password: body.password,
+            userType: "client", role: "client", registrationMethod: "admin",
+            companyName: body.companyName.trim(),
+            companyAddress: body.companyAddress.trim(),
+            companyType: body.companyType.trim(),
+            companyTypeOther: String(body.companyTypeOther || "").trim(),
+            companyMarket: "local",
+            phoneNumber: body.phoneNumber.trim(),
+            representativeFirstName: body.representativeFirstName.trim(),
+            representativeMiddleName: String(body.representativeMiddleName || "").trim(),
+            representativeLastName: body.representativeLastName.trim(),
+            representativePosition: body.representativePosition.trim(),
+            documents,
+            // An administrator must not fabricate the applicant's online consent.
+            legalConsent: pending?.legalConsent || {},
+            status: "pending", isEmailVerified: false,
+        });
+    } catch (error) {
+        await Promise.all(documents.map((doc) => deleteLocalFile(doc.publicId).catch(() => undefined)));
+        if (error?.code === 11000) return res.status(409).json({ success: false, message: "Client email already exists." });
+        throw error;
+    }
+    if (pending) {
+        await PendingClient_js_1.default.deleteOne({ _id: pending._id }).catch(() => undefined);
+        await Promise.all((pending.documents || []).map((doc) => deleteLocalFile(doc.publicId).catch(() => undefined)));
+    }
+    const payload = (0, authController_js_1.safeUser)(user);
+    (0, socket_js_1.emitToAdmins)("client:registered", {
+        id: user._id, name: user.name, email: user.email,
+        companyName: user.companyName, status: user.status, createdAt: user.createdAt,
+    });
+    return res.status(201).json({
+        success: true,
+        message: "Client created as pending. No email was sent. Review the documents and complete manual verification before approving.",
+        user: payload,
+    });
+};
+exports.createClient = createClient;
+
 const createAdminUser = async (req, res) => {
     const { name, email, password, role, permissions } = req.body;
     if (!name || !email || !password) {
@@ -150,6 +224,23 @@ const approveClient = async (req, res) => {
     const user = await User_js_1.default.findById(req.params.id);
     if (!user || user.userType !== "client") {
         return res.status(404).json({ success: false, message: "Client not found." });
+    }
+    if (["admin", "manual_review"].includes(user.registrationMethod)) {
+        const required = ["businessPermit", "birCertificate", "validId"];
+        const types = new Set((user.documents || []).map((doc) => doc.type));
+        if (required.some((type) => !types.has(type))) {
+            return res.status(400).json({ success: false, message: "Manual accounts require all three identity and company documents before approval." });
+        }
+        if (req.body?.confirmManualVerification !== true) {
+            return res.status(400).json({
+                success: false,
+                code: "MANUAL_VERIFICATION_REQUIRED",
+                message: "Confirm that you independently reviewed the applicant's documents, contact identity and required consent before approval.",
+            });
+        }
+        user.manualVerifiedAt = new Date();
+        user.manuallyVerifiedBy = req.user._id;
+        // Keep isEmailVerified false: human review is not an email OTP.
     }
     user.status = "verified";
     user.verifiedAt = new Date();

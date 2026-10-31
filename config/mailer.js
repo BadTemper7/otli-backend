@@ -76,7 +76,7 @@ const sendRegistrationOtpEmail = async ({ to, html, text }) => {
     });
     const accepted = Array.isArray(info.accepted) ? info.accepted : [];
     if (!accepted.some((address) => String(address).toLowerCase() === recipient)) {
-        throw new Error("Registration OTP was not accepted by the SMTP provider.");
+        throw Object.assign(new Error("Registration OTP was not accepted by the SMTP provider."), { code: "SMTP_REJECTED" });
     }
     // Avoid logging client addresses, OTPs, SMTP responses, or message identifiers.
     console.info("[mail] registration OTP accepted by SMTP");

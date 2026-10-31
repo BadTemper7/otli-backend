@@ -15,7 +15,8 @@
     "test:email": "node --test tests/email-policy.test.js",
     "test:registration": "node --test tests/*.test.js",
     "test:integration": "node --test tests/*.test.js",
-    "check:connections": "node scripts/check-three-projects.cjs"
+    "check:connections": "node scripts/check-three-projects.cjs",
+    "email:monitoring-indexes": "node scripts/setup-email-monitoring-indexes.cjs"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",

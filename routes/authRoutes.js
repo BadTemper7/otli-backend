@@ -16,6 +16,17 @@ router.patch("/change-password", authMiddleware_js_1.protect, (0, asyncHandler_j
 router.post("/forgot-password", (0, asyncHandler_js_1.default)(authController_js_1.forgotPassword));
 router.post("/reset-password", (0, asyncHandler_js_1.default)(authController_js_1.resetPassword));
 router.post("/email/test", (0, asyncHandler_js_1.default)(authController_js_1.sendTestEmail));
+// Lightweight quota check before uploading documents; does not reserve a slot.
+router.get("/client/register/email-status", (0, asyncHandler_js_1.default)(authController_js_1.checkRegistrationEmailAvailability));
+// Manual review stays pending and requires staff verification; no email sent.
+const manualRegistrationLimiter = require("express-rate-limit").rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 30,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { success: false, message: "Too many manual registration submissions. Please try again later." },
+});
+router.post("/client/register/manual-review", watchRegistrationRequest("manual-review"), manualRegistrationLimiter, uploadMiddleware_js_1.clientRegistrationUpload, markRegistrationUploadComplete, (0, asyncHandler_js_1.default)(authController_js_1.submitClientManualRegistration));
 router.post("/client/register/request-otp", watchRegistrationRequest("request-otp"), uploadMiddleware_js_1.clientRegistrationUpload, markRegistrationUploadComplete, (0, asyncHandler_js_1.default)(authController_js_1.requestClientRegistrationOtp));
 router.post("/client/register/resend-otp", watchRegistrationRequest("resend-otp"), (0, asyncHandler_js_1.default)(authController_js_1.resendClientRegistrationOtp));
 router.post("/client/register/verify-otp", (0, asyncHandler_js_1.default)(authController_js_1.verifyClientRegistrationOtp));
