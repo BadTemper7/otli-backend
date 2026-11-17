@@ -7,6 +7,7 @@ var __importDefault =
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const adminController_js_1 = require("../controllers/adminController.js");
+const adminStatsController = require("../controllers/adminStatsController.js");
 const yardController_js_1 = require("../controllers/yardController.js");
 const preAdviceController_js_1 = require("../controllers/preAdviceController.js");
 const inventoryController_js_1 = require("../controllers/inventoryController.js");
@@ -66,6 +67,17 @@ router.get(
   "/dashboard",
   (0, authMiddleware_js_1.requirePermission)("dashboard", "view"),
   (0, asyncHandler_js_1.default)(reportController_js_1.getOperationsDashboard),
+);
+// Database-wide KPI totals, separate from paginated user and client lists.
+router.get(
+  "/users/stats",
+  authMiddleware_js_1.superAdminOnly,
+  (0, asyncHandler_js_1.default)(adminStatsController.getAdminUserStats),
+);
+router.get(
+  "/client-registrations/stats",
+  (0, authMiddleware_js_1.requirePermission)("clientVerification", "view"),
+  (0, asyncHandler_js_1.default)(adminStatsController.getClientRegistrationStats),
 );
 router.get(
   "/users",
@@ -149,6 +161,11 @@ router.get(
   "/bookings/export",
   (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
   (0, asyncHandler_js_1.default)(operationalExportController.exportTrackingCsv),
+);
+router.get(
+  "/bookings/tracking-summary",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(moduleDataController_js_1.getTrackingSummary),
 );
 router.get(
   "/bookings/module-data",
@@ -464,6 +481,11 @@ router.delete(
   "/special-rates/:id",
   (0, authMiddleware_js_1.requirePermission)("rateSetup", "delete"),
   (0, asyncHandler_js_1.default)(specialRateController_js_1.deleteSpecialRate),
+);
+router.get(
+  "/payment-types/stats",
+  (0, authMiddleware_js_1.requirePermission)("paymentTypes", "view"),
+  (0, asyncHandler_js_1.default)(paymentTypeController_js_1.getPaymentTypeStats),
 );
 router.get(
   "/payment-types",

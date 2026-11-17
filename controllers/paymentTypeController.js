@@ -115,6 +115,29 @@ const listPaymentTypes = async (req, res) => {
     return res.json({ success: true, paymentTypes: paymentTypes.map(exports.safePaymentType) });
 };
 exports.listPaymentTypes = listPaymentTypes;
+// Dedicated, unpaginated counters for the Payment Types overview cards.
+const getPaymentTypeStats = async (_req, res) => {
+    const [summary] = await PaymentType_js_1.default.aggregate([
+        { $match: { type: { $ne: "cash" } } },
+        { $group: {
+            _id: null,
+            total: { $sum: 1 },
+            active: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
+            banks: { $sum: { $cond: [{ $eq: ["$type", "bank"] }, 1, 0] } },
+            wallets: { $sum: { $cond: [{ $eq: ["$type", "ewallet"] }, 1, 0] } },
+        } },
+    ]);
+    return res.json({
+        success: true,
+        stats: {
+            total: Number(summary?.total) || 0,
+            active: Number(summary?.active) || 0,
+            banks: Number(summary?.banks) || 0,
+            wallets: Number(summary?.wallets) || 0,
+        },
+    });
+};
+exports.getPaymentTypeStats = getPaymentTypeStats;
 const listActivePaymentTypes = async (req, res) => {
     await ensureDefaultCashPaymentType();
     const paymentTypes = await PaymentType_js_1.default.find({

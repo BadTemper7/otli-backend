@@ -27,6 +27,23 @@ const captureController = (handler, req) => new Promise((resolve, reject) => {
     Promise.resolve(handler(req, res)).catch(reject);
 });
 
+// Shared by the dedicated tracking KPI API and the backwards-compatible
+// optional filteredSummary field. Pagination never enters the aggregation.
+const calculateFilteredTrackingSummary = (query = {}) => Booking.aggregate([
+    { $match: buildAdminBookingQuery(query) },
+    { $group: {
+        _id: null, total: { $sum: 1 },
+        completed: { $sum: { $cond: [{ $eq: ["$status", "completed_gate_out_done"] }, 1, 0] } },
+        active: { $sum: { $cond: [{ $in: ["$status", ["rejected", "cancelled", "completed_gate_out_done"]] }, 0, 1] } },
+    } },
+]).then(([row]) => ({ total: row?.total || 0, completed: row?.completed || 0, active: row?.active || 0 }));
+
+const getTrackingSummary = async (req, res) => {
+    const summary = await calculateFilteredTrackingSummary(req.query);
+    return res.json({ success: true, summary });
+};
+exports.getTrackingSummary = getTrackingSummary;
+
 const getBookingModuleData = async (req, res) => {
     const summaryOnly = String(req.query?.summaryOnly || "false") === "true";
     if (summaryOnly) {
@@ -40,14 +57,7 @@ const getBookingModuleData = async (req, res) => {
     // independently of page and limit. Other booking module consumers retain
     // their existing global summary contract unless they opt in.
     const includeFilteredSummary = String(req.query?.includeFilteredSummary || "false") === "true";
-    const filteredPromise = includeFilteredSummary ? Booking.aggregate([
-        { $match: buildAdminBookingQuery(req.query) },
-        { $group: {
-            _id: null, total: { $sum: 1 },
-            completed: { $sum: { $cond: [{ $eq: ["$status", "completed_gate_out_done"] }, 1, 0] } },
-            active: { $sum: { $cond: [{ $in: ["$status", ["rejected", "cancelled", "completed_gate_out_done"]] }, 0, 1] } },
-        } },
-    ]).then(([row]) => ({ total: row?.total || 0, completed: row?.completed || 0, active: row?.active || 0 })) : Promise.resolve(null);
+    const filteredPromise = includeFilteredSummary ? calculateFilteredTrackingSummary(req.query) : Promise.resolve(null);
     const [table, summary, filteredSummary] = await Promise.all([tablePromise, summaryPromise, filteredPromise]);
     return res.json({
         success: true,
