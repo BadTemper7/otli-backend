@@ -13,6 +13,7 @@
     "seed": "node seed/seedSuperAdmin.js",
     "backfill:release-reports": "node seed/backfillReleaseReports.js",
     "test:email": "node --test tests/email-policy.test.js",
+    "test:reports": "node --test tests/report-*.test.cjs",
     "test:registration": "node --test tests/*.test.js",
     "test:integration": "node --test tests/*.test.js",
     "check:connections": "node scripts/check-three-projects.cjs",

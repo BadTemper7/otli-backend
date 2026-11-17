@@ -9,14 +9,8 @@ const { yardBookingPipeline, summarizeYardBookingGroups } = require("../utils/ad
 const User_js_1 = __importDefault(require("../models/User.js"));
 const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
-const ACTIVE_YARD_STATUSES = [
-    "approved_area_assigned",
-    "gate_in_approved",
-    "stored_in_assigned_area",
-    "gate_out_requested",
-    "gate_out_approved",
-    "gate_out_reversal_requested",
-];
+const { parseReportFilters, buildReportQueries, getYardOverview, parsePage } = require("../services/yardReportService.js");
+const { csvLine } = require("../utils/reportCsv.js");
 const CURRENT_INVENTORY_STATUSES = [
     "gate_in_approved",
     "stored_in_assigned_area",
@@ -25,14 +19,7 @@ const CURRENT_INVENTORY_STATUSES = [
     "gate_out_reversal_requested",
 ];
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
-const emptySizeCounts = () => ({ 20: 0, 40: 0, total: 0 });
-const addContainer = (bucket, size) => {
-    const normalizedSize = [20, 40].includes(Number(size)) ? Number(size) : 20;
-    bucket[normalizedSize] += 1;
-    bucket.total += 1;
-};
 const getTeu = (size) => Number(size) === 40 ? 2 : 1;
-const getFeu = (size) => Number(size) === 20 ? 0.5 : 1;
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const getReleaseRevenue = (report = {}) => {
     const storedPaidTotal = Number(report.totalPaidAmount) || 0;
@@ -50,23 +37,6 @@ const getReleaseRevenue = (report = {}) => {
     return roundMoney(report.revenueTotal);
 };
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
-const normalizeKey = (value) => String(value || "all").trim().toLowerCase();
-const buildDateQuery = (startDate, endDate) => {
-    const dateQuery = {};
-    const parseParts = (value) => {
-        const [year, month, day] = String(value || "").slice(0, 10).split("-").map(Number);
-        return year && month && day ? { year, month: month - 1, day } : null;
-    };
-    const startParts = parseParts(startDate);
-    if (startParts) {
-        dateQuery.$gte = toUtcFromManilaParts(startParts.year, startParts.month, startParts.day);
-    }
-    const endParts = parseParts(endDate);
-    if (endParts) {
-        dateQuery.$lte = toUtcFromManilaParts(endParts.year, endParts.month, endParts.day, 23, 59, 59, 999);
-    }
-    return Object.keys(dateQuery).length ? dateQuery : null;
-};
 const toUtcFromManilaParts = (year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) => {
     return new Date(Date.UTC(year, month, day, hour, minute, second, millisecond) - MANILA_OFFSET_MS);
 };
@@ -241,115 +211,186 @@ const safeReleaseReport = (report) => {
         generatedAt: report.generatedAt,
     };
 };
+// Reports overview is computed across ALL matching MongoDB records. Only the
+// release-history table is paginated; overview and client ranking are never
+// derived from the current page.
+const getReportsOverview = async (req, res) => {
+    const filters = parseReportFilters(req.query);
+    const report = await getYardOverview(filters);
+    return res.json({ success: true, generatedAt: new Date(), filters, report });
+};
+exports.getReportsOverview = getReportsOverview;
+
+const fetchReleasePage = async (filters, pageArg, sizeArg) => {
+    const { releaseQuery } = buildReportQueries(filters);
+    const { page: requestedPage, pageSize } = parsePage(pageArg, sizeArg);
+    const totalItems = await ReleaseReport_js_1.default.countDocuments(releaseQuery);
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const page = Math.min(requestedPage, totalPages);
+    const results = await ReleaseReport_js_1.default.find(releaseQuery)
+        .populate("client", "name companyName email")
+        .populate("booking", "paymentTransactions billingTotal")
+        .sort({ releasedAt: -1, generatedAt: -1, _id: -1 })
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .lean();
+    return {
+        items: results.map(safeReleaseReport),
+        pagination: { page, pageSize, totalItems, totalPages },
+    };
+};
+
+const getReportsReleases = async (req, res) => {
+    const filters = parseReportFilters(req.query);
+    const pageResult = await fetchReleasePage(filters, req.query.page, req.query.pageSize);
+    return res.json({ success: true, filters, ...pageResult });
+};
+exports.getReportsReleases = getReportsReleases;
+
+// Backward-compatible endpoint for integrations still using yard-containers.
+// Its array is explicitly a page, never a disguised "all records" response.
 const getYardContainerReport = async (req, res) => {
-    const query = { status: { $in: ACTIVE_YARD_STATUSES } };
-    const loadStatus = normalizeKey(req.query.loadStatus);
-    const rateType = normalizeKey(req.query.rateType);
-    const recordSource = normalizeKey(req.query.recordSource);
-    if (req.query.clientId)
-        query.client = req.query.clientId;
-    if (["empty", "laden"].includes(loadStatus))
-        query.containerLoadStatus = loadStatus;
-    if (["local", "international"].includes(rateType))
-        query.rateType = rateType;
-    if (recordSource === "client_booking") {
-        query.$and = [
-            ...(query.$and || []),
-            { $or: [{ recordSource: "client_booking" }, { recordSource: { $exists: false } }, { recordSource: "" }] },
-        ];
-    }
-    else if (["admin_manual", "legacy_migration"].includes(recordSource)) {
-        query.recordSource = recordSource;
-    }
-    const dateQuery = buildDateQuery(req.query.startDate, req.query.endDate);
-    if (dateQuery) {
-        query.$or = [
-            { inDate: dateQuery },
-            { storageStartDate: dateQuery },
-            { assignedAt: dateQuery },
-            { createdAt: dateQuery },
-        ];
-    }
-    const releaseQuery = {};
-    if (req.query.clientId)
-        releaseQuery.client = req.query.clientId;
-    if (["empty", "laden"].includes(loadStatus))
-        releaseQuery.containerLoadStatus = loadStatus;
-    if (["local", "international"].includes(rateType))
-        releaseQuery.rateType = rateType;
-    if (recordSource === "client_booking") {
-        releaseQuery.$and = [
-            ...(releaseQuery.$and || []),
-            { $or: [{ recordSource: "client_booking" }, { recordSource: { $exists: false } }, { recordSource: "" }] },
-        ];
-    }
-    else if (["admin_manual", "legacy_migration"].includes(recordSource)) {
-        releaseQuery.recordSource = recordSource;
-    }
-    if (dateQuery)
-        releaseQuery.releasedAt = dateQuery;
-    const [bookingGroups, releaseReports, clientUsers] = await Promise.all([
-        Booking_js_1.default.aggregate(yardBookingPipeline(query)),
-        ReleaseReport_js_1.default.find(releaseQuery)
-            .populate("client", "name companyName email")
-            .populate("booking", "paymentTransactions billingTotal")
-            .sort({ releasedAt: -1, generatedAt: -1 })
-            .limit(1000)
-            .lean(),
-        User_js_1.default.find({ userType: "client" }).select("name companyName email").sort({ companyName: 1, name: 1 }).lean(),
+    const filters = parseReportFilters(req.query);
+    const [report, releases] = await Promise.all([
+        getYardOverview(filters), fetchReleasePage(filters, req.query.page, req.query.pageSize),
     ]);
-    const { empty, laden, international, local, totalTeu, totalFeu, legacyContainers, totalContainersInYard } = summarizeYardBookingGroups(bookingGroups);
-    const revenueByClient = new Map();
-    for (const report of releaseReports) {
-        const clientId = report.client?._id ? String(report.client._id) : String(report.client || "");
-        if (!clientId)
-            continue;
-        const clientName = report.client?.companyName || report.client?.name || report.client?.email || "Unknown Client";
-        const current = revenueByClient.get(clientId) || { clientId, clientName, bookingCount: 0, subtotal: 0, vat: 0, revenue: 0 };
-        current.bookingCount += 1;
-        current.subtotal += Number(report.billingSubtotal) || 0;
-        current.vat += Number(report.vatAmount) || 0;
-        current.revenue += getReleaseRevenue(report);
-        revenueByClient.set(clientId, current);
-    }
-    const clientOptions = clientUsers.map((client) => ({
-        id: String(client._id),
-        name: client.companyName || client.name || client.email || "Unnamed Client",
-    }));
-    const clientRevenue = Array.from(revenueByClient.values()).map((item) => ({
-        ...item,
-        subtotal: roundMoney(item.subtotal),
-        vat: roundMoney(item.vat),
-        revenue: roundMoney(item.revenue),
-    })).sort((a, b) => b.revenue - a.revenue);
-    const totalRecordedRevenue = roundMoney(releaseReports.reduce((sum, item) => sum + getReleaseRevenue(item), 0));
     return res.json({
-        success: true,
-        generatedAt: new Date(),
-        filters: {
-            startDate: req.query.startDate || "",
-            endDate: req.query.endDate || "",
-            clientId: req.query.clientId || "",
-            recordSource: req.query.recordSource || "",
-        },
-        report: {
-            totalContainersInYard,
-            legacyContainers,
-            empty,
-            laden,
-            international,
-            local,
-            totalTeu: Math.round(totalTeu * 100) / 100,
-            totalFeu: Math.round(totalFeu * 100) / 100,
-            releasedContainers: releaseReports.length,
-            totalRecordedRevenue,
-            releaseReports: releaseReports.map(safeReleaseReport),
-            clientRevenue,
-            clientOptions,
-        },
+        success: true, generatedAt: new Date(), filters,
+        report: { ...report, releaseReports: releases.items, releasePagination: releases.pagination },
     });
 };
 exports.getYardContainerReport = getYardContainerReport;
+
+const reportTime = (value) => {
+    if (!value) return "";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("en-PH", {
+        timeZone: "Asia/Manila", dateStyle: "medium", timeStyle: "short",
+    }).format(date);
+};
+
+const overviewRows = (report) => [
+    ["Containers in Yard", report.totalContainersInYard],
+    ["Legacy Records", report.legacyContainers],
+    ["Empty Containers", report.empty.total],
+    ["Laden Containers", report.laden.total],
+    ["Local Containers", report.local.total],
+    ["International Containers", report.international.total],
+    ["Completed Releases", report.releasedContainers],
+    ["Recorded Revenue (PHP)", report.totalRecordedRevenue],
+];
+const breakdownRows = (report) => [
+    ...["empty", "laden", "local", "international"].flatMap((kind) => [
+        [kind, "20 FT", report[kind][20]], [kind, "40 FT", report[kind][40]],
+        [kind, "Total", report[kind].total],
+    ]),
+];
+
+const writeCsv = async (res, row) => {
+    if (res.destroyed || res.writableEnded) return false;
+    if (!res.write(csvLine(row))) {
+        await new Promise((resolve) => {
+            const finish = () => {
+                res.off("drain", finish);
+                res.off("close", finish);
+                resolve();
+            };
+            res.once("drain", finish);
+            res.once("close", finish);
+        });
+    }
+    return !res.destroyed && !res.writableEnded;
+};
+
+// CSV is streamed from a database cursor with the same filters as the table.
+// It does not use the table's page/limit or its in-memory rendered rows.
+const exportReportsCsv = async (req, res) => {
+    const filters = parseReportFilters(req.query);
+    const section = String(req.query.section || "all").toLowerCase();
+    if (!["all", "overview", "containers", "revenue", "releases", "capacity"].includes(section)) {
+        const error = new Error("Invalid report export section.");
+        error.statusCode = 400;
+        throw error;
+    }
+    const include = (name) => section === "all" || section === name;
+    // Complete the database query before sending headers so failures can still
+    // be reported as JSON API errors rather than incomplete CSV downloads.
+    const report = section === "releases" ? null : await getYardOverview(filters);
+    const { releaseQuery } = buildReportQueries(filters);
+    const now = new Date();
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="yard-report-${section}-${now.toISOString().slice(0, 10)}.csv"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const send = (row) => writeCsv(res, row);
+    try {
+        await send(["OneTrue Yard Container Report"]);
+        await send(["Generated (PH time)", reportTime(now)]);
+        await send(["Content", section]);
+        await send(["Date From", filters.startDate || "All"]);
+        await send(["Date To", filters.endDate || "All"]);
+        await send(["Client ID", filters.clientId || "All Clients"]);
+        await send(["Container Load", filters.loadStatus]);
+        await send(["Rate Classification", filters.rateType]);
+        await send(["Record Source", filters.recordSource]);
+        if (include("overview")) {
+            await send([]);
+            await send(["Overview Metric", "Total Across All Filtered Records"]);
+            for (const row of overviewRows(report)) await send(row);
+        }
+        if (include("containers")) {
+            await send([]);
+            await send(["Container Classification", "Size", "Count"]);
+            for (const row of breakdownRows(report)) await send(row);
+        }
+        if (include("capacity")) {
+            await send([]);
+            await send(["Capacity Equivalent", "Quantity"]);
+            await send(["TEU", report.totalTeu]);
+            await send(["FEU", report.totalFeu]);
+        }
+        if (include("revenue")) {
+            await send([]);
+            await send(["Client", "Completed Releases", "Subtotal (PHP)", "VAT (PHP)", "Revenue (PHP)"]);
+            for (const item of report.clientRevenue) {
+                if (!await send([item.clientName, item.bookingCount, item.subtotal, item.vat, item.revenue])) break;
+            }
+        }
+        if (include("releases") && !res.destroyed) {
+            await send([]);
+            await send(["Release Report", "Client", "Container", "Size (FT)", "Record Source", "Load Status", "Classification", "Released At (PH)", "Billing Days", "Gate-In Payment (PHP)", "Gate-Out Payment (PHP)", "Total Billing (PHP)", "Subtotal (PHP)", "VAT (PHP)", "Revenue (PHP)"]);
+            const cursor = ReleaseReport_js_1.default.find(releaseQuery)
+                .populate("client", "name companyName email")
+                .populate("booking", "paymentTransactions billingTotal")
+                .sort({ releasedAt: -1, generatedAt: -1, _id: -1 })
+                .lean().cursor({ batchSize: 100 });
+            try {
+                for await (const raw of cursor) {
+                    if (res.destroyed) break;
+                    const item = safeReleaseReport(raw);
+                    const written = await send([
+                        item.reportNumber, item.clientName, item.containerNumber, item.containerSize,
+                        item.recordSource, item.containerLoadStatus, item.rateType, reportTime(item.releasedAt),
+                        item.billingDays, item.gateInPaymentTotal, item.gateOutPaymentTotal,
+                        item.totalBillingAmount, item.billingSubtotal, item.vatAmount, item.revenueTotal,
+                    ]);
+                    if (!written) break;
+                }
+            } finally {
+                await cursor.close();
+            }
+        }
+        if (!res.destroyed) res.end();
+    } catch (error) {
+        if (res.headersSent) {
+            res.destroy(error);
+            return;
+        }
+        throw error;
+    }
+};
+exports.exportReportsCsv = exportReportsCsv;
+
 const getOperationsDashboard = async (req, res) => {
     const now = new Date();
     const range = getDashboardRange(req.query.period, now);

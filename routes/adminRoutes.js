@@ -122,6 +122,23 @@ router.delete(
   (0, authMiddleware_js_1.requirePermission)("clientVerification", "delete"),
   (0, asyncHandler_js_1.default)(adminController_js_1.deleteUser),
 );
+// All reports routes require the same reports:view permission. The overview
+// aggregates every matching record; only /releases uses page/pageSize.
+router.get(
+  "/reports/overview",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(reportController_js_1.getReportsOverview),
+);
+router.get(
+  "/reports/releases",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(reportController_js_1.getReportsReleases),
+);
+router.get(
+  "/reports/export",
+  (0, authMiddleware_js_1.requirePermission)("reports", "view"),
+  (0, asyncHandler_js_1.default)(reportController_js_1.exportReportsCsv),
+);
 router.get(
   "/reports/yard-containers",
   (0, authMiddleware_js_1.requirePermission)("reports", "view"),
