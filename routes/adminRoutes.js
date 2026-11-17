@@ -23,6 +23,7 @@ const auditController_js_1 = require("../controllers/auditController.js");
 const transactionController_js_1 = require("../controllers/transactionController.js");
 const moduleDataController_js_1 = require("../controllers/moduleDataController.js");
 const storageMonitoringController = require("../controllers/storageMonitoringController.js");
+const operationalExportController = require("../controllers/operationalExportController.js");
 const emailUsageController = require("../controllers/emailUsageController.js");
 const emailMonitoringController = require("../controllers/emailMonitoringController.js");
 const router = express_1.default.Router();
@@ -143,6 +144,11 @@ router.get(
   "/reports/yard-containers",
   (0, authMiddleware_js_1.requirePermission)("reports", "view"),
   (0, asyncHandler_js_1.default)(reportController_js_1.getYardContainerReport),
+);
+router.get(
+  "/bookings/export",
+  (0, authMiddleware_js_1.requirePermission)("bookings", "view"),
+  (0, asyncHandler_js_1.default)(operationalExportController.exportTrackingCsv),
 );
 router.get(
   "/bookings/module-data",
@@ -623,6 +629,11 @@ router.get(
   "/inventory/stats",
   (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
   (0, asyncHandler_js_1.default)(inventoryController_js_1.getInventoryStats),
+);
+router.get(
+  "/inventory/export",
+  (0, authMiddleware_js_1.requirePermission)("inventory", "view"),
+  (0, asyncHandler_js_1.default)(operationalExportController.exportInventoryCsv),
 );
 router.get(
   "/inventory/containers",

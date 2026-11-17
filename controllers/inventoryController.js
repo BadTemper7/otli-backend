@@ -696,6 +696,7 @@ const getInventoryStats = async (req, res) => {
     }
 };
 exports.getInventoryStats = getInventoryStats;
+const { buildInventoryQueries } = require("../services/adminListFilters.js");
 const listInventoryContainers = async (req, res) => {
     // Storage Monitoring has its own bounded, indexed pagination path. Do not
     // run the general Inventory $unionWith pipeline or load inventory stats.
@@ -703,63 +704,15 @@ const listInventoryContainers = async (req, res) => {
         return require("./storageController.js").listStoredContainers(req, res);
     }
 
-    const { areaId, blockId, status, clientId, search, loadStatus, rateType, recordSource, source = "all", view = "inventory" } = req.query;
-    const isStorageView = String(view).toLowerCase() === "storage";
-    const query = { status: { $in: isStorageView ? INVENTORY_STORAGE_LEGACY_STATUSES : INVENTORY_LEGACY_STATUSES } };
-    const bookingQuery = { status: { $in: isStorageView ? INVENTORY_STORAGE_BOOKING_STATUSES : INVENTORY_BOOKING_STATUSES } };
-    const normalizedSource = ["all", "booking", "legacy"].includes(String(source)) ? String(source) : "all";
-    const normalizedLoadStatus = String(loadStatus || "").toLowerCase() === "loaded" ? "laden" : String(loadStatus || "").toLowerCase();
-    // Storage records always use server-side pagination, just like Inventory.
-    // Yard occupancy and selected-area 3D data use independent data requests.
+    const { areaId } = req.query;
+    // The same predicates are used by the table and the full CSV export.
+    const { query, bookingQuery, normalizedSource } = await buildInventoryQueries(req.query, {
+        User: User_js_1.default,
+        YardArea: YardArea_js_1.default,
+    });
     const page = Math.max(Math.floor(Number(req.query.page) || 1), 1);
     const limit = Math.min(Math.max(Math.floor(Number(req.query.limit || req.query.pageSize) || 10), 1), 100);
     const skip = (page - 1) * limit;
-
-    if (clientId && clientId !== "all") {
-        query.client = clientId;
-        bookingQuery.client = clientId;
-    }
-    if (status && status !== "all") {
-        query.status = INVENTORY_LEGACY_STATUSES.includes(status) ? status : { $in: [] };
-        bookingQuery.status = INVENTORY_BOOKING_STATUSES.includes(status) ? status : { $in: [] };
-    }
-    if (areaId) {
-        query.area = areaId;
-        bookingQuery.assignedArea = areaId;
-    }
-    if (blockId) {
-        query.block = blockId;
-        bookingQuery.assignedBlock = blockId;
-    }
-    if (["empty", "laden"].includes(normalizedLoadStatus)) {
-        query.containerStatus = normalizedLoadStatus;
-        bookingQuery.containerLoadStatus = normalizedLoadStatus;
-    }
-    if (["local", "international"].includes(String(rateType || "").toLowerCase())) {
-        query.rateType = String(rateType).toLowerCase();
-        bookingQuery.rateType = String(rateType).toLowerCase();
-    }
-    if (recordSource && recordSource !== "all") bookingQuery.recordSource = recordSource;
-
-    if (search) {
-        const escaped = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = new RegExp(escaped, "i");
-        const [matchingClients, matchingAreas] = await Promise.all([
-            User_js_1.default.find({ userType: "client", $or: [{ name: pattern }, { companyName: pattern }, { email: pattern }] }).select("_id").limit(100).lean(),
-            YardArea_js_1.default.find({ $or: [{ name: pattern }, { code: pattern }] }).select("_id").limit(100).lean(),
-        ]);
-        const clientIds = matchingClients.map((item) => item._id);
-        const areaIds = matchingAreas.map((item) => item._id);
-        query.$or = [
-            { containerNumber: pattern }, { bookingNumber: pattern }, { blNumber: pattern }, { slotNumber: pattern }, { shippingLine: pattern },
-            ...(clientIds.length ? [{ client: { $in: clientIds } }] : []), ...(areaIds.length ? [{ area: { $in: areaIds } }] : []),
-        ];
-        bookingQuery.$or = [
-            { containerNumber: pattern }, { bookingReference: pattern }, { bookingNumber: pattern }, { blNumber: pattern },
-            { legacyRegistrationNumber: pattern }, { assignedSlotNumber: pattern }, { shippingLine: pattern },
-            ...(clientIds.length ? [{ client: { $in: clientIds } }] : []), ...(areaIds.length ? [{ assignedArea: { $in: areaIds } }] : []),
-        ];
-    }
 
     const includeLegacy = normalizedSource !== "booking";
     const includeBookings = normalizedSource !== "legacy";

@@ -1697,41 +1697,9 @@ const getClientBooking = async (req, res) => {
     return res.json({ success: true, booking: safeBooking(booking) });
 };
 exports.getClientBooking = getClientBooking;
+const { buildAdminBookingQuery } = require("../services/adminListFilters.js");
 const listAdminBookings = async (req, res) => {
-    const { status, billingStatus, loadStatus, rateType, recordSource, clientId, search } = req.query;
-    const query = {};
-    if (clientId && clientId !== "all")
-        query.client = clientId;
-    if (status && status !== "all") {
-        const statuses = String(status).split(",").map((item) => item.trim()).filter(Boolean);
-        query.status = statuses.length > 1 ? { $in: statuses } : statuses[0];
-    }
-    if (billingStatus && billingStatus !== "all")
-        query.billingStatus = billingStatus;
-    if (["empty", "laden"].includes(String(loadStatus || "").toLowerCase()))
-        query.containerLoadStatus = String(loadStatus).toLowerCase();
-    if (["local", "international"].includes(String(rateType || "").toLowerCase()))
-        query.rateType = String(rateType).toLowerCase();
-    const normalizedRecordSource = String(recordSource || "").toLowerCase();
-    if (normalizedRecordSource === "client_booking") {
-        query.$and = [
-            ...(query.$and || []),
-            { $or: [{ recordSource: "client_booking" }, { recordSource: { $exists: false } }, { recordSource: "" }] },
-        ];
-    }
-    else if (["admin_manual", "legacy_migration"].includes(normalizedRecordSource)) {
-        query.recordSource = normalizedRecordSource;
-    }
-    if (search) {
-        const term = String(search).trim();
-        query.$or = [
-            { bookingReference: { $regex: term, $options: "i" } },
-            { bookingNumber: { $regex: term, $options: "i" } },
-            { legacyRegistrationNumber: { $regex: term, $options: "i" } },
-            { containerNumber: { $regex: term, $options: "i" } },
-            { shippingLine: { $regex: term, $options: "i" } },
-        ];
-    }
+    const query = buildAdminBookingQuery(req.query);
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit || req.query.pageSize) || 10, 1), 100);
     const allowedSortFields = new Set(["createdAt", "updatedAt", "inDate", "outDate", "containerNumber", "bookingReference", "status"]);

@@ -5,6 +5,8 @@ const bookingController = require("./bookingController.js");
 const inventoryController = require("./inventoryController.js");
 const yardController = require("./yardController.js");
 const { loadStorageOccupancy } = require("../utils/storageOccupancy.js");
+const Booking = require("../models/Booking.js").default;
+const { buildAdminBookingQuery } = require("../services/adminListFilters.js");
 
 const captureController = (handler, req) => new Promise((resolve, reject) => {
     let statusCode = 200;
@@ -34,12 +36,25 @@ const getBookingModuleData = async (req, res) => {
     const includeSummary = String(req.query?.includeSummary || "true") !== "false";
     const tablePromise = captureController(bookingController.listAdminBookings, req);
     const summaryPromise = includeSummary ? captureController(bookingController.getBookingSummary, req) : Promise.resolve(null);
-    const [table, summary] = await Promise.all([tablePromise, summaryPromise]);
+    // Counts for Container Tracking follow the exact same filters as its table,
+    // independently of page and limit. Other booking module consumers retain
+    // their existing global summary contract unless they opt in.
+    const includeFilteredSummary = String(req.query?.includeFilteredSummary || "false") === "true";
+    const filteredPromise = includeFilteredSummary ? Booking.aggregate([
+        { $match: buildAdminBookingQuery(req.query) },
+        { $group: {
+            _id: null, total: { $sum: 1 },
+            completed: { $sum: { $cond: [{ $eq: ["$status", "completed_gate_out_done"] }, 1, 0] } },
+            active: { $sum: { $cond: [{ $in: ["$status", ["rejected", "cancelled", "completed_gate_out_done"]] }, 0, 1] } },
+        } },
+    ]).then(([row]) => ({ total: row?.total || 0, completed: row?.completed || 0, active: row?.active || 0 })) : Promise.resolve(null);
+    const [table, summary, filteredSummary] = await Promise.all([tablePromise, summaryPromise, filteredPromise]);
     return res.json({
         success: true,
         bookings: table.bookings || [],
         pagination: table.pagination || { page: 1, currentPage: 1, limit: 10, perPage: 10, total: 0, totalPages: 1 },
         ...(includeSummary ? { summary: summary?.summary || {} } : {}),
+        ...(includeFilteredSummary ? { filteredSummary } : {}),
     });
 };
 exports.getBookingModuleData = getBookingModuleData;
