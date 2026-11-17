@@ -68,6 +68,7 @@ vm.runInNewContext(source, {
     if (name === "../utils/adminMetrics.js") return {};
     if (name === "../services/yardReportService.js") return reportService;
     if (name === "../utils/reportCsv.js") return { csvLine };
+    if (name === "../utils/dashboardDateRange.js") return require("../utils/dashboardDateRange.js");
     throw new Error(`Unexpected import ${name}`);
   },
   Date, Intl, Number, String, Object, Math, Array, process: { env: {} },

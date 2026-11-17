@@ -11,6 +11,7 @@ const YardBlock_js_1 = __importDefault(require("../models/YardBlock.js"));
 const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js"));
 const { parseReportFilters, buildReportQueries, getYardOverview, parsePage } = require("../services/yardReportService.js");
 const { csvLine } = require("../utils/reportCsv.js");
+const { getDashboardRange, getDashboardBuckets } = require("../utils/dashboardDateRange.js");
 const CURRENT_INVENTORY_STATUSES = [
     "gate_in_approved",
     "stored_in_assigned_area",
@@ -18,7 +19,6 @@ const CURRENT_INVENTORY_STATUSES = [
     "gate_out_approved",
     "gate_out_reversal_requested",
 ];
-const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 const getTeu = (size) => Number(size) === 40 ? 2 : 1;
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const getReleaseRevenue = (report = {}) => {
@@ -37,96 +37,6 @@ const getReleaseRevenue = (report = {}) => {
     return roundMoney(report.revenueTotal);
 };
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
-const toUtcFromManilaParts = (year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) => {
-    return new Date(Date.UTC(year, month, day, hour, minute, second, millisecond) - MANILA_OFFSET_MS);
-};
-const getDashboardRange = (periodValue = "daily", now = new Date()) => {
-    const period = ["daily", "weekly", "monthly", "yearly"].includes(String(periodValue)) ? String(periodValue) : "daily";
-    const manilaNow = new Date(now.getTime() + MANILA_OFFSET_MS);
-    const year = manilaNow.getUTCFullYear();
-    const month = manilaNow.getUTCMonth();
-    const day = manilaNow.getUTCDate();
-    let start;
-    if (period === "yearly") {
-        start = toUtcFromManilaParts(year, 0, 1);
-    }
-    else if (period === "monthly") {
-        start = toUtcFromManilaParts(year, month, 1);
-    }
-    else if (period === "weekly") {
-        const weekday = manilaNow.getUTCDay();
-        const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
-        start = toUtcFromManilaParts(year, month, day - daysSinceMonday);
-    }
-    else {
-        start = toUtcFromManilaParts(year, month, day);
-    }
-    return { period, start, end: now };
-};
-const getManilaParts = (date) => {
-    const manilaDate = new Date(date.getTime() + MANILA_OFFSET_MS);
-    return {
-        year: manilaDate.getUTCFullYear(),
-        month: manilaDate.getUTCMonth(),
-        day: manilaDate.getUTCDate(),
-        hour: manilaDate.getUTCHours(),
-    };
-};
-const formatBucketLabel = (date, options) => new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Manila",
-    ...options,
-}).format(date);
-const getDashboardBuckets = (range) => {
-    const buckets = [];
-    const nowParts = getManilaParts(range.end);
-    const startParts = getManilaParts(range.start);
-    if (range.period === "daily") {
-        for (let hour = 0; hour <= nowParts.hour; hour += 1) {
-            const start = toUtcFromManilaParts(nowParts.year, nowParts.month, nowParts.day, hour);
-            const naturalEnd = toUtcFromManilaParts(nowParts.year, nowParts.month, nowParts.day, hour, 59, 59, 999);
-            const end = naturalEnd > range.end ? range.end : naturalEnd;
-            buckets.push({
-                key: `${nowParts.year}-${nowParts.month + 1}-${nowParts.day}-${hour}`,
-                label: formatBucketLabel(start, { hour: "numeric" }),
-                start,
-                end,
-            });
-        }
-        return { granularity: "hour", buckets };
-    }
-    if (range.period === "yearly") {
-        for (let month = 0; month <= nowParts.month; month += 1) {
-            const start = toUtcFromManilaParts(nowParts.year, month, 1);
-            const naturalEnd = toUtcFromManilaParts(nowParts.year, month + 1, 1, 0, 0, 0, 0);
-            const endOfMonth = new Date(naturalEnd.getTime() - 1);
-            const end = endOfMonth > range.end ? range.end : endOfMonth;
-            buckets.push({
-                key: `${nowParts.year}-${month + 1}`,
-                label: formatBucketLabel(start, { month: "short" }),
-                start,
-                end,
-            });
-        }
-        return { granularity: "month", buckets };
-    }
-    let cursor = toUtcFromManilaParts(startParts.year, startParts.month, startParts.day);
-    while (cursor <= range.end) {
-        const cursorParts = getManilaParts(cursor);
-        const nextDay = toUtcFromManilaParts(cursorParts.year, cursorParts.month, cursorParts.day + 1);
-        const naturalEnd = new Date(nextDay.getTime() - 1);
-        const end = naturalEnd > range.end ? range.end : naturalEnd;
-        buckets.push({
-            key: `${cursorParts.year}-${cursorParts.month + 1}-${cursorParts.day}`,
-            label: range.period === "weekly"
-                ? formatBucketLabel(cursor, { weekday: "short", day: "numeric" })
-                : formatBucketLabel(cursor, { month: "short", day: "numeric" }),
-            start: cursor,
-            end,
-        });
-        cursor = nextDay;
-    }
-    return { granularity: "day", buckets };
-};
 const getBookingEntryDate = (booking) => {
     const value = booking.gateInApprovedAt || booking.storageStartDate || booking.storedAt || booking.inDate;
     return value ? new Date(value) : null;
@@ -393,7 +303,13 @@ exports.exportReportsCsv = exportReportsCsv;
 
 const getOperationsDashboard = async (req, res) => {
     const now = new Date();
-    const range = getDashboardRange(req.query.period, now);
+    let range;
+    try {
+        range = getDashboardRange(req.query.period, now, req.query.startDate, req.query.endDate);
+    } catch (error) {
+        if (error instanceof RangeError) return res.status(400).json({ success: false, message: error.message });
+        throw error;
+    }
     const [dashboardBookings, periodReleaseReports, currentInventoryBookings, yardBlocks, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
         Booking_js_1.default.find({
             $and: [
