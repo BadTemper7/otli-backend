@@ -64,11 +64,13 @@ vm.runInNewContext(source, {
     if (name === "../models/Booking.js") return { __esModule: true, default: {} };
     if (name === "../models/User.js") return { __esModule: true, default: {} };
     if (name === "../models/YardBlock.js") return { __esModule: true, default: {} };
+    if (name === "../models/InventoryContainer.js") return { __esModule: true, default: {} };
     if (name === "../models/ReleaseReport.js") return { __esModule: true, default: fakeRelease };
     if (name === "../utils/adminMetrics.js") return {};
     if (name === "../services/yardReportService.js") return reportService;
     if (name === "../utils/reportCsv.js") return { csvLine };
     if (name === "../utils/dashboardDateRange.js") return require("../utils/dashboardDateRange.js");
+    if (name === "../utils/dashboardOccupancy.js") return require("../utils/dashboardOccupancy.js");
     throw new Error(`Unexpected import ${name}`);
   },
   Date, Intl, Number, String, Object, Math, Array, process: { env: {} },

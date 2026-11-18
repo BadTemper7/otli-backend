@@ -18,7 +18,8 @@
     "test:integration": "node --test tests/*.test.js",
     "check:connections": "node scripts/check-three-projects.cjs",
     "email:monitoring-indexes": "node scripts/setup-email-monitoring-indexes.cjs",
-    "test:operations": "node --test tests/operational-exports.test.cjs"
+    "test:operations": "node --test tests/operational-exports.test.cjs",
+    "audit:occupancy": "node scripts/audit-dashboard-occupancy.cjs"
   },
   "dependencies": {
     "bcryptjs": "2.4.3",

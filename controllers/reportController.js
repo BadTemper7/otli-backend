@@ -12,6 +12,8 @@ const ReleaseReport_js_1 = __importDefault(require("../models/ReleaseReport.js")
 const { parseReportFilters, buildReportQueries, getYardOverview, parsePage } = require("../services/yardReportService.js");
 const { csvLine } = require("../utils/reportCsv.js");
 const { getDashboardRange, getDashboardBuckets } = require("../utils/dashboardDateRange.js");
+const { actualBookingEntry, currentYardUtilization, historicalYardUtilization } = require("../utils/dashboardOccupancy.js");
+const InventoryContainer_js_1 = __importDefault(require("../models/InventoryContainer.js"));
 const CURRENT_INVENTORY_STATUSES = [
     "gate_in_approved",
     "stored_in_assigned_area",
@@ -19,7 +21,6 @@ const CURRENT_INVENTORY_STATUSES = [
     "gate_out_approved",
     "gate_out_reversal_requested",
 ];
-const getTeu = (size) => Number(size) === 40 ? 2 : 1;
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const getReleaseRevenue = (report = {}) => {
     const storedPaidTotal = Number(report.totalPaidAmount) || 0;
@@ -37,10 +38,7 @@ const getReleaseRevenue = (report = {}) => {
     return roundMoney(report.revenueTotal);
 };
 const normalizeRateType = (value) => String(value || "").toLowerCase() === "international" ? "international" : "local";
-const getBookingEntryDate = (booking) => {
-    const value = booking.gateInApprovedAt || booking.storageStartDate || booking.storedAt || booking.inDate;
-    return value ? new Date(value) : null;
-};
+const getBookingEntryDate = (booking) => actualBookingEntry(booking).date;
 const getDashboardTrend = ({ range, bookings, releaseReports, totalYardCapacity }) => {
     const bucketConfig = getDashboardBuckets(range);
     const series = bucketConfig.buckets.map((bucket) => {
@@ -53,8 +51,6 @@ const getDashboardTrend = ({ range, bookings, releaseReports, totalYardCapacity 
             const releasedAt = booking.releasedAt ? new Date(booking.releasedAt) : null;
             if (entryAt && entryAt >= bucket.start && entryAt <= bucket.end)
                 containersReceived += 1;
-            if (entryAt && entryAt <= bucket.end && (!releasedAt || releasedAt > bucket.end))
-                occupiedSlots += getTeu(booking.containerSize);
         }
         for (const report of releaseReports) {
             const releasedAt = report.releasedAt ? new Date(report.releasedAt) : null;
@@ -310,30 +306,39 @@ const getOperationsDashboard = async (req, res) => {
         if (error instanceof RangeError) return res.status(400).json({ success: false, message: error.message });
         throw error;
     }
-    const [dashboardBookings, periodReleaseReports, currentInventoryBookings, yardBlocks, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
+    const [dashboardBookings, periodReleaseReports, currentInventoryBookings, currentLegacyInventory, yardBlocks, historicalInventory, recentAccounts, pendingClients, pendingBookings, gateOutRequests] = await Promise.all([
         Booking_js_1.default.find({
             $and: [
                 {
                     $or: [
                         { gateInApprovedAt: { $lte: range.end } },
-                        { storageStartDate: { $lte: range.end } },
                         { storedAt: { $lte: range.end } },
-                        { inDate: { $lte: range.end } },
+                        { recordSource: "legacy_migration", migrationDate: { $lte: range.end } },
+                        { recordSource: "legacy_migration", historicalGateInDateType: "exact", inDate: { $lte: range.end } },
+                        { releasedAt: { $gte: range.start, $lte: range.end } },
                     ],
                 },
                 { $or: [{ releasedAt: null }, { releasedAt: { $gt: range.start } }] },
             ],
-        }).select("containerSize gateInApprovedAt storageStartDate storedAt inDate releasedAt").lean(),
+        }).select("containerSize gateInApprovedAt storedAt inDate recordSource migrationDate historicalGateInDateType legacyRegisteredAt createdAt releasedAt status assignedBlock").lean(),
         ReleaseReport_js_1.default.find({ releasedAt: { $gte: range.start, $lte: range.end } })
-            .select("releasedAt revenueTotal totalPaidAmount gateInPaymentTotal gateOutPaymentTotal billingSubtotal vatAmount client booking")
+            .select("releasedAt gateInAt revenueTotal totalPaidAmount gateInPaymentTotal gateOutPaymentTotal billingSubtotal vatAmount client booking")
             .populate("client", "name companyName email")
             .populate("booking", "paymentTransactions")
             .sort({ releasedAt: 1 })
             .lean(),
         Booking_js_1.default.find({ status: { $in: CURRENT_INVENTORY_STATUSES } })
-            .select("containerNumber containerSize status rateType client outDate releasedAt gateOutGracePeriodMinutes")
+            .select("containerNumber containerSize status rateType client outDate releasedAt gateOutGracePeriodMinutes gateInApprovedAt storedAt assignedBlock")
             .lean(),
-        YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots").lean(),
+        InventoryContainer_js_1.default.find({ status: { $ne: "released" } })
+            .select("status containerNumber containerSize rateType block storageStartDate createdAt").lean(),
+        YardBlock_js_1.default.find({ status: { $in: ["active", "full"] } }).select("teuSlots occupiedSlots containerSize status").lean(),
+        InventoryContainer_js_1.default.find({
+            $or: [
+                { storageStartDate: { $lte: range.end } },
+                { createdAt: { $lte: range.end } },
+            ],
+        }).select("containerSize block status storageStartDate createdAt").lean(),
         User_js_1.default.find().select("name email userType role status companyName createdAt").sort({ createdAt: -1 }).limit(10).lean(),
         User_js_1.default.countDocuments({ userType: "client", status: { $in: ["pending", "resubmitted"] } }),
         Booking_js_1.default.countDocuments({ status: "pending_admin_approval" }),
@@ -350,7 +355,8 @@ const getOperationsDashboard = async (req, res) => {
         const graceMinutes = Math.max(Number(booking.gateOutGracePeriodMinutes ?? defaultGraceMinutes) || 0, 0);
         return dashboardNow.getTime() > scheduledAt.getTime() + graceMinutes * 60 * 1000;
     }).length;
-    const localContainers = currentInventoryBookings.filter((booking) => normalizeRateType(booking.rateType) === "local").length;
+    const localContainers = [...currentInventoryBookings, ...currentLegacyInventory]
+        .filter((record) => normalizeRateType(record.rateType) === "local").length;
     const customerTotals = new Map();
     for (const report of periodReleaseReports) {
         const clientId = report.client?._id ? String(report.client._id) : String(report.client || "");
@@ -366,19 +372,63 @@ const getOperationsDashboard = async (req, res) => {
         customerTotals.set(clientId, current);
     }
     const topCustomer = Array.from(customerTotals.values()).sort((a, b) => b.revenue - a.revenue || b.transactionCount - a.transactionCount)[0] || null;
-    const totalYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.teuSlots) || 0), 0);
-    const occupiedYardCapacity = yardBlocks.reduce((sum, block) => sum + (Number(block.occupiedSlots) || 0), 0);
-    const availableYardCapacity = Math.max(totalYardCapacity - occupiedYardCapacity, 0);
-    const currentOccupancyRate = totalYardCapacity > 0 ? Math.round((occupiedYardCapacity / totalYardCapacity) * 10000) / 100 : 0;
+    const currentOccupancy = currentYardUtilization(yardBlocks);
+    const totalYardCapacity = currentOccupancy.capacity;
+    const occupiedYardCapacity = currentOccupancy.occupied;
+    const availableYardCapacity = currentOccupancy.available;
+    const currentOccupancyRate = currentOccupancy.rate;
+    // A completed booking without releasedAt needs its release report to avoid
+    // being counted forever. The report is unique per booking.
+    const missingReleaseIds = dashboardBookings
+        .filter((booking) => booking._id && !booking.releasedAt &&
+            booking.status === "completed_gate_out_done")
+        .map((booking) => booking._id);
+    const releaseHistory = missingReleaseIds.length
+        ? await ReleaseReport_js_1.default.find({ booking: { $in: missingReleaseIds } })
+            .select("booking releasedAt gateInAt storageStartDate").lean()
+        : [];
     const trend = getDashboardTrend({ range, bookings: dashboardBookings, releaseReports: periodReleaseReports, totalYardCapacity });
+    const occupancy = historicalYardUtilization({
+        range,
+        buckets: getDashboardBuckets(range).buckets,
+        bookings: dashboardBookings,
+        inventory: historicalInventory,
+        releaseReports: releaseHistory,
+        blocks: yardBlocks,
+    });
+    trend.series = trend.series.map((point, index) => ({ ...point,
+        occupiedSlots: occupancy.series[index]?.occupiedSlots ?? null,
+        occupancyRate: occupancy.series[index]?.occupancyRate ?? null,
+    }));
+    // Present a warning when an active booking has no verifiable Gate-In date.
+    // Such a booking cannot be placed accurately on the historical timeline.
+    const historicalBookingIds = new Set(dashboardBookings.map((record) => String(record._id || "")));
+    if (Math.abs(range.end.getTime() - now.getTime()) < 5000) {
+        for (const booking of currentInventoryBookings) {
+            if (!historicalBookingIds.has(String(booking._id || "")) &&
+                !actualBookingEntry(booking).date) {
+                occupancy.quality.missingGateInDates += 1;
+                occupancy.quality.reliability = "partial";
+            }
+        }
+    }
+    // Released records missing physical entry history cannot be reconstructed
+    // from a scheduled date, even if their release is recorded.
+    for (const report of periodReleaseReports) {
+        const bookingId = String(report.booking?._id || report.booking || "");
+        if (bookingId && !historicalBookingIds.has(bookingId) && !report.gateInAt) {
+            occupancy.quality.missingGateInDates += 1;
+            occupancy.quality.reliability = "partial";
+        }
+    }
+    trend.occupancyAverageRate = occupancy.averageOccupancyRate;
+    trend.occupancyQuality = occupancy.quality;
     const containersReceived = trend.series.reduce((sum, point) => sum + point.containersReceived, 0);
     const containersReleased = trend.series.reduce((sum, point) => sum + point.containersReleased, 0);
     const revenue = roundMoney(trend.series.reduce((sum, point) => sum + point.revenue, 0));
     const revenueSubtotal = roundMoney(periodReleaseReports.reduce((sum, report) => sum + (Number(report.billingSubtotal) || 0), 0));
     const revenueVat = roundMoney(periodReleaseReports.reduce((sum, report) => sum + (Number(report.vatAmount) || 0), 0));
-    const averageOccupancyRate = trend.series.length
-        ? Math.round((trend.series.reduce((sum, point) => sum + point.occupancyRate, 0) / trend.series.length) * 100) / 100
-        : 0;
+    const averageOccupancyRate = occupancy.averageOccupancyRate;
     return res.json({
         success: true,
         generatedAt: now,
@@ -388,7 +438,7 @@ const getOperationsDashboard = async (req, res) => {
         metrics: {
             containersReceived,
             containersReleased,
-            currentInventory: currentInventoryBookings.length,
+            currentInventory: currentInventoryBookings.length + currentLegacyInventory.length,
             localContainers,
             availableYardCapacity,
             totalYardCapacity,
@@ -396,6 +446,7 @@ const getOperationsDashboard = async (req, res) => {
             occupancyRate: averageOccupancyRate,
             averageOccupancyRate,
             currentOccupancyRate,
+            occupancyQuality: occupancy.quality,
             revenue,
             revenueSubtotal,
             revenueVat,
